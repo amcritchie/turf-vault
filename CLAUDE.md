@@ -13,7 +13,7 @@ Anchor smart contract for contest escrow on Solana. Backend for Turf Monster (Ra
 ## File Layout
 
 ```
-programs/turf_vault/src/
+programs/turf-vault/src/
 ├── lib.rs              # Program entry — 12 instruction handlers (thin wrappers)
 ├── state.rs            # 4 account structs + 2 enums + multisig helpers
 ├── errors.rs           # 13 error codes (VaultError enum)
@@ -31,7 +31,7 @@ programs/turf_vault/src/
     ├── force_close_vault.rs # Migration-only: requires cosigner (2-of-3)
     └── update_signers.rs # Update multisig signers/threshold (2-of-3)
 tests/
-└── turf_vault.ts       # 25 test cases covering all instructions + multisig
+└── turf-vault.ts       # 25 test cases covering all instructions + multisig
 Anchor.toml             # Program ID, cluster config, test script
 ```
 
@@ -239,7 +239,7 @@ bin/rails solana:init_vault INIT=true SIGNERS=addr1,addr2,addr3 THRESHOLD=2
 
 ## Versioning Protocol
 
-- **Semantic versioning** in `programs/turf_vault/Cargo.toml`
+- **Semantic versioning** in `programs/turf-vault/Cargo.toml`
   - MAJOR: Breaking account layout changes
   - MINOR: New instructions or features
   - PATCH: Bug fixes, validation improvements

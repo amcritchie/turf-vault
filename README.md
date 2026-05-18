@@ -12,7 +12,7 @@ Solana escrow program for contest entry fees and prize distribution. Built with 
 
 TurfVault is the on-chain backend for [Turf Monster](https://turf.mcritchie.studio), a sports pick'em app. It implements a "DeFi mullet" — a traditional Rails web app on top, Solana smart contract underneath.
 
-> **Part of the McRitchie ecosystem** — see [`ECOSYSTEM.md`](https://github.com/amcritchie/mcritchie_studio/blob/main/docs/ECOSYSTEM.md) for the 5-repo map; [`house-burn-down.md`](https://github.com/amcritchie/mcritchie_studio/blob/main/docs/agents/system/house-burn-down.md) for fresh-Mac recovery.
+> **Part of the McRitchie ecosystem** — see [`ECOSYSTEM.md`](https://github.com/amcritchie/mcritchie-studio/blob/main/docs/ECOSYSTEM.md) for the 5-repo map; [`house-burn-down.md`](https://github.com/amcritchie/mcritchie-studio/blob/main/docs/agents/system/house-burn-down.md) for fresh-Mac recovery.
 
 Users deposit USDC/USDT into the vault, enter contests by paying entry fees from their balance, and receive payouts when contests settle. All token custody and prize math happen on-chain; the Rails app handles UX and game logic.
 

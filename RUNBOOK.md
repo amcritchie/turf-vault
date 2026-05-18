@@ -6,7 +6,7 @@ Troubleshooting guide for autonomous agents. Format: problem, diagnosis, fix.
 
 **Rust version mismatch**
 - Diagnosis: `anchor build` fails with compiler errors or feature-gate issues. `rust-toolchain.toml` specifies Rust 1.89.0.
-- Fix: `rustup install 1.89.0 && rustup default 1.89.0`. Verify: `rustc --version`. The toolchain file should auto-select but sometimes `rustup override` is needed: `cd /Users/alex/projects/turf_vault && rustup override set 1.89.0`.
+- Fix: `rustup install 1.89.0 && rustup default 1.89.0`. Verify: `rustc --version`. The toolchain file should auto-select but sometimes `rustup override` is needed: `cd /Users/alex/projects/turf-vault && rustup override set 1.89.0`.
 
 **Anchor version mismatch**
 - Diagnosis: `anchor build` fails with IDL generation errors or unexpected syntax. Project uses Anchor 0.32.1.
@@ -59,7 +59,7 @@ yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts
 
 **TypeScript type errors**
 - Diagnosis: `yarn run ts-mocha` fails with type errors from `@coral-xyz/anchor` or `@solana/web3.js`.
-- Fix: `cd /Users/alex/projects/turf_vault && yarn install`. Check `package.json` for version compatibility. If types changed after an Anchor CLI update, regenerate the IDL: `anchor build` (updates `target/idl/turf_vault.json` and `target/types/turf_vault.ts`).
+- Fix: `cd /Users/alex/projects/turf-vault && yarn install`. Check `package.json` for version compatibility. If types changed after an Anchor CLI update, regenerate the IDL: `anchor build` (updates `target/idl/turf-vault.json` and `target/types/turf-vault.ts`).
 
 ## Devnet SOL Acquisition (Faucet Protocol)
 
@@ -80,7 +80,7 @@ Check balance: `solana balance --url devnet` (uses default keypair) or `solana b
 **Procedure** (run from the Turf Monster Rails app):
 ```bash
 # Step 1: Close the old vault (recovers rent SOL to admin)
-cd /Users/alex/projects/turf_monster
+cd /Users/alex/projects/turf-monster
 bin/rails solana:init_vault FORCE_CLOSE=true
 
 # Step 2: Initialize new vault with updated schema
