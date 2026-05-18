@@ -11,6 +11,8 @@ pub mod force_close_vault;
 pub mod migrate_user_account;
 pub mod update_signers;
 pub mod mint_entry_token;
+pub mod enter_contest_with_token;
+pub mod enter_contest_direct_with_token;
 
 pub use initialize::*;
 pub use create_user_account::*;
@@ -25,3 +27,5 @@ pub use force_close_vault::*;
 pub use migrate_user_account::*;
 pub use update_signers::*;
 pub use mint_entry_token::*;
+pub use enter_contest_with_token::*;
+pub use enter_contest_direct_with_token::*;

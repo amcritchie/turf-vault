@@ -1123,4 +1123,391 @@ describe("turf_vault", () => {
       }
     });
   });
+
+  describe("consume_entry_token", () => {
+    // Helpers (re-declared in this scope — same as mint_entry_token describe block)
+    const deriveEntryTokenPda = (wallet: PublicKey, sequence: number | bigint): PublicKey => {
+      const seqBuf = Buffer.alloc(8);
+      seqBuf.writeBigUInt64LE(BigInt(sequence));
+      const [pda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("entry_token"), wallet.toBuffer(), seqBuf],
+        program.programId
+      );
+      return pda;
+    };
+
+    const makeSourceRef = (s: string): number[] => {
+      const buf = Buffer.alloc(64);
+      buf.write(s, 0, "utf8");
+      return Array.from(buf);
+    };
+
+    const deriveContestPda = (cid: Buffer): PublicKey => {
+      const [pda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("contest"), cid],
+        program.programId
+      );
+      return pda;
+    };
+
+    const deriveEntryPda = (cid: Buffer, wallet: PublicKey, entryNum: number): PublicKey => {
+      const buf = Buffer.alloc(4);
+      buf.writeUInt32LE(entryNum);
+      const [pda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("entry"), cid, wallet.toBuffer(), buf],
+        program.programId
+      );
+      return pda;
+    };
+
+    const deriveUserPda = (wallet: PublicKey): PublicKey => {
+      const [pda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("user"), wallet.toBuffer()],
+        program.programId
+      );
+      return pda;
+    };
+
+    // Each test uses its own fresh contest so we don't collide with the main test contest
+    const tokenEntryContestId = createHash("sha256").update("token-entry-happy-path").digest();
+    const tokenEntryContestPda = deriveContestPda(tokenEntryContestId);
+
+    it("token-funded managed entry consumes token, awards seeds, does NOT charge USDC", async () => {
+      // Setup: create a fresh contest (admin pays prizes from adminUsdcAccount)
+      await program.methods
+        .createContest(
+          Array.from(tokenEntryContestId) as any,
+          new anchor.BN(toTokenAmount(9)),
+          5,
+          [],
+          new anchor.BN(0)
+        )
+        .accountsStrict({
+          payer: admin.publicKey,
+          creator: admin.publicKey,
+          vaultState: vaultStatePda,
+          contest: tokenEntryContestPda,
+          mint: usdcMint,
+          creatorTokenAccount: adminUsdcAccount,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      // user1 sequence 0 was minted in mint_entry_token describe block and is unconsumed
+      const entryTokenPda = deriveEntryTokenPda(user1.publicKey, 0);
+      const userAccountPda = deriveUserPda(user1.publicKey);
+      const entryPda = deriveEntryPda(tokenEntryContestId, user1.publicKey, 1);
+
+      // Snapshot state BEFORE
+      const tokenBefore = await program.account.entryTokenAccount.fetch(entryTokenPda);
+      expect(tokenBefore.consumed).to.equal(false);
+      expect(tokenBefore.consumedAt).to.equal(null);
+
+      const userBefore = await program.account.userAccount.fetch(userAccountPda);
+      const contestBefore = await program.account.contest.fetch(tokenEntryContestPda);
+      const vaultBefore = await getAccount(connection, vaultUsdcPda);
+
+      await program.methods
+        .enterContestWithToken(1)
+        .accountsStrict({
+          payer: admin.publicKey,
+          wallet: user1.publicKey,
+          vaultState: vaultStatePda,
+          userAccount: userAccountPda,
+          contest: tokenEntryContestPda,
+          contestEntry: entryPda,
+          entryToken: entryTokenPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      // Token is now consumed and timestamp stamped
+      const tokenAfter = await program.account.entryTokenAccount.fetch(entryTokenPda);
+      expect(tokenAfter.consumed).to.equal(true);
+      expect(tokenAfter.consumedAt).to.not.equal(null);
+      expect((tokenAfter.consumedAt as anchor.BN).toNumber()).to.be.greaterThan(0);
+
+      // Seeds incremented by 65
+      const userAfter = await program.account.userAccount.fetch(userAccountPda);
+      expect(userAfter.seeds.toNumber()).to.equal(userBefore.seeds.toNumber() + 65);
+
+      // Balance is UNCHANGED (USDC NOT charged)
+      expect(userAfter.balance.toNumber()).to.equal(userBefore.balance.toNumber());
+
+      // Contest entries incremented, entry_fees NOT incremented
+      const contestAfter = await program.account.contest.fetch(tokenEntryContestPda);
+      expect(contestAfter.currentEntries).to.equal(contestBefore.currentEntries + 1);
+      expect(contestAfter.entryFees.toNumber()).to.equal(contestBefore.entryFees.toNumber());
+
+      // Vault USDC balance unchanged
+      const vaultAfter = await getAccount(connection, vaultUsdcPda);
+      expect(Number(vaultAfter.amount)).to.equal(Number(vaultBefore.amount));
+
+      // Contest entry exists
+      const entry = await program.account.contestEntry.fetch(entryPda);
+      expect(entry.wallet.toBase58()).to.equal(user1.publicKey.toBase58());
+      expect(entry.entryNum).to.equal(1);
+      expect(JSON.stringify(entry.status)).to.equal(JSON.stringify({ active: {} }));
+    });
+
+    it("rejects re-consuming an already-consumed token", async () => {
+      // Token at sequence 0 was just consumed above. Try to use it on a new entry.
+      // Create a second fresh contest so the entry PDA seeds differ.
+      const reuseContestId = createHash("sha256").update("token-entry-reuse-attempt").digest();
+      const reuseContestPda = deriveContestPda(reuseContestId);
+
+      await program.methods
+        .createContest(
+          Array.from(reuseContestId) as any,
+          new anchor.BN(toTokenAmount(9)),
+          5,
+          [],
+          new anchor.BN(0)
+        )
+        .accountsStrict({
+          payer: admin.publicKey,
+          creator: admin.publicKey,
+          vaultState: vaultStatePda,
+          contest: reuseContestPda,
+          mint: usdcMint,
+          creatorTokenAccount: adminUsdcAccount,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const consumedTokenPda = deriveEntryTokenPda(user1.publicKey, 0);
+      const userAccountPda = deriveUserPda(user1.publicKey);
+      const entryPda = deriveEntryPda(reuseContestId, user1.publicKey, 1);
+
+      try {
+        await program.methods
+          .enterContestWithToken(1)
+          .accountsStrict({
+            payer: admin.publicKey,
+            wallet: user1.publicKey,
+            vaultState: vaultStatePda,
+            userAccount: userAccountPda,
+            contest: reuseContestPda,
+            contestEntry: entryPda,
+            entryToken: consumedTokenPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("EntryTokenAlreadyConsumed");
+      }
+    });
+
+    it("rejects entry when token owner != wallet", async () => {
+      // user1 has an unconsumed token at sequence 1. user2 tries to use it.
+      // Create another fresh contest for this test
+      const wrongOwnerContestId = createHash("sha256").update("token-wrong-owner").digest();
+      const wrongOwnerContestPda = deriveContestPda(wrongOwnerContestId);
+
+      await program.methods
+        .createContest(
+          Array.from(wrongOwnerContestId) as any,
+          new anchor.BN(toTokenAmount(9)),
+          5,
+          [],
+          new anchor.BN(0)
+        )
+        .accountsStrict({
+          payer: admin.publicKey,
+          creator: admin.publicKey,
+          vaultState: vaultStatePda,
+          contest: wrongOwnerContestPda,
+          mint: usdcMint,
+          creatorTokenAccount: adminUsdcAccount,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      // user1's unconsumed token (sequence 1)
+      const user1TokenPda = deriveEntryTokenPda(user1.publicKey, 1);
+      // user2's account and a fresh entry PDA
+      const user2AccountPda = deriveUserPda(user2.publicKey);
+      const entryPda = deriveEntryPda(wrongOwnerContestId, user2.publicKey, 1);
+
+      try {
+        await program.methods
+          .enterContestWithToken(1)
+          .accountsStrict({
+            payer: admin.publicKey,
+            wallet: user2.publicKey,
+            vaultState: vaultStatePda,
+            userAccount: user2AccountPda,
+            contest: wrongOwnerContestPda,
+            contestEntry: entryPda,
+            entryToken: user1TokenPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("EntryTokenWrongOwner");
+      }
+    });
+
+    it("backwards compat: enter_contest (no token) still charges USDC and awards seeds", async () => {
+      // Create yet another contest so we don't collide
+      const backCompatContestId = createHash("sha256").update("token-backcompat").digest();
+      const backCompatContestPda = deriveContestPda(backCompatContestId);
+
+      await program.methods
+        .createContest(
+          Array.from(backCompatContestId) as any,
+          new anchor.BN(toTokenAmount(9)),
+          5,
+          [],
+          new anchor.BN(0)
+        )
+        .accountsStrict({
+          payer: admin.publicKey,
+          creator: admin.publicKey,
+          vaultState: vaultStatePda,
+          contest: backCompatContestPda,
+          mint: usdcMint,
+          creatorTokenAccount: adminUsdcAccount,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      // user1 has an existing UserAccount with non-zero balance from earlier tests
+      const userAccountPda = deriveUserPda(user1.publicKey);
+      const entryPda = deriveEntryPda(backCompatContestId, user1.publicKey, 1);
+
+      const userBefore = await program.account.userAccount.fetch(userAccountPda);
+      const contestBefore = await program.account.contest.fetch(backCompatContestPda);
+
+      // Original enter_contest (no entry_token in accounts)
+      await program.methods
+        .enterContest(1)
+        .accountsStrict({
+          payer: admin.publicKey,
+          wallet: user1.publicKey,
+          vaultState: vaultStatePda,
+          userAccount: userAccountPda,
+          contest: backCompatContestPda,
+          contestEntry: entryPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const userAfter = await program.account.userAccount.fetch(userAccountPda);
+      const contestAfter = await program.account.contest.fetch(backCompatContestPda);
+
+      // USDC IS charged: balance decreased by entry fee
+      expect(userAfter.balance.toNumber()).to.equal(
+        userBefore.balance.toNumber() - toTokenAmount(9)
+      );
+      // 65 seeds awarded
+      expect(userAfter.seeds.toNumber()).to.equal(userBefore.seeds.toNumber() + 65);
+      // Entry fees collected on the contest
+      expect(contestAfter.entryFees.toNumber()).to.equal(
+        contestBefore.entryFees.toNumber() + toTokenAmount(9)
+      );
+      expect(contestAfter.currentEntries).to.equal(contestBefore.currentEntries + 1);
+    });
+
+    it("token-funded direct entry (Phantom path) consumes token, awards seeds, NO USDC transfer", async () => {
+      // We need a fresh user with: SOL, a UserAccount PDA, an unconsumed entry token.
+      // user2 already has all of these (UserAccount created in create_user_account tests).
+      // First, mint an unconsumed token for user2 at a fresh sequence.
+      const seq = new anchor.BN(0);
+      const user2TokenPda = deriveEntryTokenPda(user2.publicKey, 0);
+      const sourceRef = makeSourceRef("direct-entry-token-test");
+      const STRIPE = 1;
+
+      await program.methods
+        .mintEntryToken(seq, STRIPE, sourceRef)
+        .accountsStrict({
+          admin: admin.publicKey,
+          vaultState: vaultStatePda,
+          userWallet: user2.publicKey,
+          entryToken: user2TokenPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      // Fresh contest for the direct-token path
+      const directContestId = createHash("sha256").update("token-direct-happy-path").digest();
+      const directContestPda = deriveContestPda(directContestId);
+
+      await program.methods
+        .createContest(
+          Array.from(directContestId) as any,
+          new anchor.BN(toTokenAmount(9)),
+          5,
+          [],
+          new anchor.BN(0)
+        )
+        .accountsStrict({
+          payer: admin.publicKey,
+          creator: admin.publicKey,
+          vaultState: vaultStatePda,
+          contest: directContestPda,
+          mint: usdcMint,
+          creatorTokenAccount: adminUsdcAccount,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const user2AccountPda = deriveUserPda(user2.publicKey);
+      const entryPda = deriveEntryPda(directContestId, user2.publicKey, 1);
+
+      const tokenBefore = await program.account.entryTokenAccount.fetch(user2TokenPda);
+      expect(tokenBefore.consumed).to.equal(false);
+      const userBefore = await program.account.userAccount.fetch(user2AccountPda);
+      const user2UsdcBefore = await getAccount(connection, user2UsdcAccount);
+      const vaultBefore = await getAccount(connection, vaultUsdcPda);
+
+      await program.methods
+        .enterContestDirectWithToken(1)
+        .accountsStrict({
+          payer: admin.publicKey,
+          user: user2.publicKey,
+          userAccount: user2AccountPda,
+          vaultState: vaultStatePda,
+          contest: directContestPda,
+          contestEntry: entryPda,
+          entryToken: user2TokenPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([user2])
+        .rpc();
+
+      // Token consumed + stamped
+      const tokenAfter = await program.account.entryTokenAccount.fetch(user2TokenPda);
+      expect(tokenAfter.consumed).to.equal(true);
+      expect(tokenAfter.consumedAt).to.not.equal(null);
+
+      // Seeds incremented +65
+      const userAfter = await program.account.userAccount.fetch(user2AccountPda);
+      expect(userAfter.seeds.toNumber()).to.equal(userBefore.seeds.toNumber() + 65);
+
+      // user2's USDC ATA unchanged (NO direct transfer)
+      const user2UsdcAfter = await getAccount(connection, user2UsdcAccount);
+      expect(Number(user2UsdcAfter.amount)).to.equal(Number(user2UsdcBefore.amount));
+
+      // Vault USDC unchanged
+      const vaultAfter = await getAccount(connection, vaultUsdcPda);
+      expect(Number(vaultAfter.amount)).to.equal(Number(vaultBefore.amount));
+
+      // Entry recorded
+      const entry = await program.account.contestEntry.fetch(entryPda);
+      expect(entry.wallet.toBase58()).to.equal(user2.publicKey.toBase58());
+    });
+  });
 });

@@ -2,6 +2,26 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.10.0] - 2026-05-18
+
+### Added
+- `enter_contest_with_token(entry_num: u32)` — managed-wallet entry funded by an `EntryTokenAccount`
+  - Atomically consumes the supplied entry token (sets `consumed = true`, `consumed_at = now`)
+  - Skips USDC entry fee entirely (token IS the payment); `contest.entry_fees` is NOT incremented
+  - Still awards 65 seeds — token entries progress the user's level identically to paid entries
+  - Verifies `entry_token.owner == wallet.key()` and `entry_token.consumed == false` before consuming
+  - Auth: any 1-of-3 vault signer (same as `enter_contest`)
+- `enter_contest_direct_with_token(entry_num: u32)` — Phantom-direct entry funded by an `EntryTokenAccount`
+  - User signs to authorize token consumption (no USDC transfer occurs)
+  - Same consume + seeds-award semantics as `enter_contest_with_token`
+  - Auth: user signs; admin pays PDA rent
+- New errors: `EntryTokenAlreadyConsumed` (6015), `EntryTokenWrongOwner` (6016)
+- 5 new tests covering: managed-path happy path, double-consume rejection, wrong-owner rejection, backwards-compat for `enter_contest`, direct-path happy path
+
+### Design notes
+- Implemented as two new variant instructions (rather than optional accounts on the existing pair) for symmetry with the existing `enter_contest` / `enter_contest_direct` split. Rails can build the right TX based on whether a token is being redeemed.
+- The pair `(enter_contest, enter_contest_with_token)` covers managed wallets; `(enter_contest_direct, enter_contest_direct_with_token)` covers Phantom wallets. No optional-account complexity on either path.
+
 ## [0.9.0] - 2026-05-18
 
 ### Added

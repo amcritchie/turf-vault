@@ -32,4 +32,8 @@ pub enum VaultError {
     InvalidThreshold,
     #[msg("Duplicate signer in signers array")]
     DuplicateSigner,
+    #[msg("Entry token has already been consumed")]
+    EntryTokenAlreadyConsumed,
+    #[msg("Entry token owner does not match the wallet entering the contest")]
+    EntryTokenWrongOwner,
 }

@@ -75,4 +75,18 @@ pub mod turf_vault {
     ) -> Result<()> {
         handle_mint_entry_token(ctx, sequence, source, source_ref)
     }
+
+    pub fn enter_contest_with_token(
+        ctx: Context<EnterContestWithToken>,
+        entry_num: u32,
+    ) -> Result<()> {
+        handle_enter_contest_with_token(ctx, entry_num)
+    }
+
+    pub fn enter_contest_direct_with_token(
+        ctx: Context<EnterContestDirectWithToken>,
+        entry_num: u32,
+    ) -> Result<()> {
+        handle_enter_contest_direct_with_token(ctx, entry_num)
+    }
 }
