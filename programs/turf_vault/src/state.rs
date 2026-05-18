@@ -78,3 +78,40 @@ pub struct ContestEntry {
     pub payout: u64,
     pub bump: u8,
 }
+
+/// Source of an entry token (how the user obtained it)
+pub mod entry_token_source {
+    pub const OPERATOR: u8 = 0;
+    pub const STRIPE: u8 = 1;
+    pub const MOONPAY: u8 = 2;
+}
+
+/// EntryTokenAccount: a pre-purchased contest entry token issued by the admin.
+/// User redeems one of these to enter a contest without paying the entry fee at entry time.
+///
+/// PDA seeds: [b"entry_token", owner.as_ref(), sequence.to_le_bytes().as_ref()]
+/// Discovery: getProgramAccounts filter by `owner`.
+#[account]
+pub struct EntryTokenAccount {
+    pub owner: Pubkey,            // user wallet
+    pub source: u8,               // entry_token_source::{OPERATOR, STRIPE, MOONPAY}
+    pub source_ref: [u8; 64],     // truncated/padded external reference (e.g. Stripe session id)
+    pub consumed: bool,
+    pub consumed_at: Option<i64>, // unix timestamp when consumed
+    pub created_at: i64,          // unix timestamp at mint
+    pub bump: u8,
+}
+
+impl EntryTokenAccount {
+    /// Layout (after 8-byte Anchor discriminator):
+    ///   owner:        Pubkey      32
+    ///   source:       u8           1
+    ///   source_ref:   [u8; 64]    64
+    ///   consumed:     bool         1
+    ///   consumed_at:  Option<i64>  1 + 8 = 9 (tag + payload; payload always present in space calc)
+    ///   created_at:   i64          8
+    ///   bump:         u8           1
+    /// Subtotal data: 116
+    /// + 8 discriminator = 124
+    pub const LEN: usize = 8 + 32 + 1 + 64 + 1 + (1 + 8) + 8 + 1;
+}

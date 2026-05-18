@@ -991,4 +991,136 @@ describe("turf_vault", () => {
       }
     });
   });
+
+  describe("mint_entry_token", () => {
+    // Helper: derive the EntryTokenAccount PDA for a given wallet + sequence
+    const deriveEntryTokenPda = (wallet: PublicKey, sequence: number | bigint): PublicKey => {
+      const seqBuf = Buffer.alloc(8);
+      seqBuf.writeBigUInt64LE(BigInt(sequence));
+      const [pda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("entry_token"), wallet.toBuffer(), seqBuf],
+        program.programId
+      );
+      return pda;
+    };
+
+    // Helper: build a 64-byte source_ref array (left-aligned, zero-padded)
+    const makeSourceRef = (s: string): number[] => {
+      const buf = Buffer.alloc(64);
+      buf.write(s, 0, "utf8");
+      return Array.from(buf);
+    };
+
+    it("admin mints an entry token for user1 (sequence 0)", async () => {
+      const sequence = new anchor.BN(0);
+      const entryTokenPda = deriveEntryTokenPda(user1.publicKey, 0);
+      const sourceRef = makeSourceRef("operator-mint-test-0");
+      const STRIPE = 1;
+
+      await program.methods
+        .mintEntryToken(sequence, STRIPE, sourceRef)
+        .accountsStrict({
+          admin: admin.publicKey,
+          vaultState: vaultStatePda,
+          userWallet: user1.publicKey,
+          entryToken: entryTokenPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const token = await program.account.entryTokenAccount.fetch(entryTokenPda);
+      expect(token.owner.toBase58()).to.equal(user1.publicKey.toBase58());
+      expect(token.source).to.equal(STRIPE);
+      expect(Array.from(token.sourceRef)).to.deep.equal(sourceRef);
+      expect(token.consumed).to.equal(false);
+      expect(token.consumedAt).to.equal(null);
+      expect(token.createdAt.toNumber()).to.be.greaterThan(0);
+      expect(token.bump).to.be.greaterThan(0);
+    });
+
+    it("admin mints a second entry token for user1 (sequence 1)", async () => {
+      const sequence = new anchor.BN(1);
+      const entryTokenPda = deriveEntryTokenPda(user1.publicKey, 1);
+      const sourceRef = makeSourceRef("operator-mint-test-1");
+      const OPERATOR = 0;
+
+      await program.methods
+        .mintEntryToken(sequence, OPERATOR, sourceRef)
+        .accountsStrict({
+          admin: admin.publicKey,
+          vaultState: vaultStatePda,
+          userWallet: user1.publicKey,
+          entryToken: entryTokenPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const token = await program.account.entryTokenAccount.fetch(entryTokenPda);
+      expect(token.owner.toBase58()).to.equal(user1.publicKey.toBase58());
+      expect(token.source).to.equal(OPERATOR);
+      expect(token.consumed).to.equal(false);
+
+      // Confirm sequence 0 still exists and is distinct
+      const firstPda = deriveEntryTokenPda(user1.publicKey, 0);
+      const firstToken = await program.account.entryTokenAccount.fetch(firstPda);
+      expect(firstToken.owner.toBase58()).to.equal(user1.publicKey.toBase58());
+      expect(firstPda.toBase58()).to.not.equal(entryTokenPda.toBase58());
+    });
+
+    it("rejects mint by non-admin signer", async () => {
+      const sequence = new anchor.BN(99);
+      const entryTokenPda = deriveEntryTokenPda(user2.publicKey, 99);
+      const sourceRef = makeSourceRef("non-admin-attempt");
+      const STRIPE = 1;
+
+      try {
+        await program.methods
+          .mintEntryToken(sequence, STRIPE, sourceRef)
+          .accountsStrict({
+            admin: user1.publicKey, // user1 is NOT a vault signer
+            vaultState: vaultStatePda,
+            userWallet: user2.publicKey,
+            entryToken: entryTokenPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([user1])
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("Unauthorized");
+      }
+    });
+
+    it("rejects re-mint of the same sequence (PDA collision)", async () => {
+      // user1 already has sequence 0 from the first test
+      const sequence = new anchor.BN(0);
+      const entryTokenPda = deriveEntryTokenPda(user1.publicKey, 0);
+      const sourceRef = makeSourceRef("dupe-attempt");
+      const STRIPE = 1;
+
+      try {
+        await program.methods
+          .mintEntryToken(sequence, STRIPE, sourceRef)
+          .accountsStrict({
+            admin: admin.publicKey,
+            vaultState: vaultStatePda,
+            userWallet: user1.publicKey,
+            entryToken: entryTokenPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        // Anchor's init constraint fails when the account is already initialized.
+        // The error surfaces as "already in use" / custom 0 from the system program.
+        const msg = err.toString();
+        const looksLikeAlreadyInit =
+          msg.includes("already in use") ||
+          msg.includes("custom program error: 0x0") ||
+          msg.includes("custom program error: 0") ||
+          msg.includes("AccountAlreadyInitialized");
+        expect(looksLikeAlreadyInit, `Expected an "already in use" error, got: ${msg}`).to.equal(true);
+      }
+    });
+  });
 });

@@ -66,4 +66,13 @@ pub mod turf_vault {
     pub fn update_signers(ctx: Context<UpdateSigners>, new_signers: [Pubkey; 3], new_threshold: u8) -> Result<()> {
         handle_update_signers(ctx, new_signers, new_threshold)
     }
+
+    pub fn mint_entry_token(
+        ctx: Context<MintEntryToken>,
+        sequence: u64,
+        source: u8,
+        source_ref: [u8; 64],
+    ) -> Result<()> {
+        handle_mint_entry_token(ctx, sequence, source, source_ref)
+    }
 }

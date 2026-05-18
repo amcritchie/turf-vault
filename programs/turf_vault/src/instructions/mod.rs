@@ -10,6 +10,7 @@ pub mod close_contest;
 pub mod force_close_vault;
 pub mod migrate_user_account;
 pub mod update_signers;
+pub mod mint_entry_token;
 
 pub use initialize::*;
 pub use create_user_account::*;
@@ -23,3 +24,4 @@ pub use close_contest::*;
 pub use force_close_vault::*;
 pub use migrate_user_account::*;
 pub use update_signers::*;
+pub use mint_entry_token::*;
