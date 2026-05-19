@@ -2,6 +2,18 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.11.1] - 2026-05-19
+
+### Fixed
+- **OPSEC-003 — settle_contest duplicate-entry double payout (CRITICAL).**
+  - Settlement loop now rejects any `Vec<Settlement>` containing the same `(wallet, entry_num)` pair twice. Previously, two iterations with the same pair would deserialize, mutate, and serialize the same `UserAccount` PDA in sequence — the second pass read the first pass's write and added the payout again, bypassing the `total_payouts <= entry_fees + prizes` cap on the actual user balance.
+  - Additionally, `settle_contest` now refuses to mutate any `ContestEntry` whose `status != EntryStatus::Active`. Defense-in-depth against any future second-settle path; today this also blocks the only way the duplicate-entry bug could have shown up across two separate settle calls.
+  - Errors: duplicates raise `DuplicateEntry` (6008). Already-settled entries raise `ContestAlreadySettled` (6007).
+  - New test: `rejects settlement with duplicate (wallet, entry_num) pair (v0.11.1)`.
+
+### Internal
+- Audit reference: `mcritchie-studio/docs/agents/system/opsec-audit-pre-prod-2026-05-19.md` OPSEC-003.
+
 ## [Unreleased] - 2026-05-18 (post-v0.11.0)
 
 ### Changed

@@ -1116,6 +1116,62 @@ describe("turf_vault", () => {
         expect(err.toString()).to.contain("ContestAlreadySettled");
       }
     });
+
+    it("rejects settlement with duplicate (wallet, entry_num) pair (v0.11.1)", async () => {
+      // OPSEC-003: the same entry must not appear twice in a single settle
+      // call — would otherwise credit the user's balance twice in one tx.
+      const dupeEntryContestId = createHash("sha256").update("dupe-entry-test").digest();
+      const [dupeEntryContestPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("contest"), dupeEntryContestId],
+        program.programId
+      );
+
+      await program.methods
+        .createContest(
+          Array.from(dupeEntryContestId) as any,
+          new anchor.BN(toTokenAmount(9)),
+          5,
+          [],
+          new anchor.BN(0)
+        )
+        .accountsStrict({
+          payer: admin.publicKey,
+          creator: admin.publicKey,
+          vaultState: vaultStatePda,
+          contest: dupeEntryContestPda,
+          mint: usdcMint,
+          creatorTokenAccount: adminUsdcAccount,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      // Duplicate (wallet=user1, entry_num=1). Payouts are zero so the
+      // total_payouts cap check passes trivially and the dedup check is
+      // what should fire. Remaining accounts intentionally empty — the
+      // dedup runs before the remaining-accounts length check.
+      const settlements = [
+        { wallet: user1.publicKey, entryNum: 1, rank: 1, payout: new anchor.BN(0) },
+        { wallet: user1.publicKey, entryNum: 1, rank: 2, payout: new anchor.BN(0) },
+      ];
+
+      try {
+        await program.methods
+          .settleContest(settlements)
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: signer2.publicKey,
+            vaultState: vaultStatePda,
+            contest: dupeEntryContestPda,
+          })
+          .signers([signer2])
+          .rpc();
+        expect.fail("Should have thrown DuplicateEntry");
+      } catch (err) {
+        expect(err.toString()).to.contain("DuplicateEntry");
+      }
+    });
   });
 
   describe("withdraw", () => {

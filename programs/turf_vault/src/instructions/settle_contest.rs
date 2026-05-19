@@ -49,6 +49,18 @@ pub fn handle_settle_contest(ctx: Context<SettleContest>, settlements: Vec<Settl
         .ok_or(VaultError::Overflow)?;
     require!(total_payouts <= max_payout, VaultError::SettlementOverflow);
 
+    // Reject duplicate (wallet, entry_num) pairs in the settlement vec.
+    // Without this, the same entry could be credited twice in a single
+    // settle call — the second iteration sees the first iteration's write
+    // (since we re-deserialize from account data each pass) and adds again,
+    // bypassing the total_payouts cap on the actual user balance.
+    let mut seen: Vec<(Pubkey, u32)> = Vec::with_capacity(settlements.len());
+    for s in settlements.iter() {
+        let key = (s.wallet, s.entry_num);
+        require!(!seen.contains(&key), VaultError::DuplicateEntry);
+        seen.push(key);
+    }
+
     // Process each settlement via remaining accounts
     let remaining = &ctx.remaining_accounts;
     require!(remaining.len() == settlements.len() * 2, VaultError::Unauthorized);
@@ -90,6 +102,11 @@ pub fn handle_settle_contest(ctx: Context<SettleContest>, settlements: Vec<Settl
         let mut entry_data = entry_account_info.try_borrow_mut_data()?;
         let mut entry: ContestEntry =
             ContestEntry::try_deserialize(&mut &entry_data[..])?;
+        // Refuse to mutate an entry that's already been settled. Combined
+        // with the dedup check above, this blocks double-payout via any
+        // path (duplicate in vec, or a second settle call referencing the
+        // same entry).
+        require!(entry.status == EntryStatus::Active, VaultError::ContestAlreadySettled);
         entry.rank = settlement.rank;
         entry.payout = settlement.payout;
         entry.status = if settlement.payout > 0 {
