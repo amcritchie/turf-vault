@@ -2,6 +2,16 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased] - 2026-05-19 (post-v0.11.1)
+
+### Security / Operations
+- **OPSEC-002 — program upgrade authority migrated to a Squads 2-of-3 multisig (devnet).**
+  - Upgrade authority moved from the single keypair `4AQMNwhyZtsaCLx3Dv9G5a2rXaJ6M221FYQw6sommRWz` to the Squads V4 vault PDA `BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC`. A program upgrade now requires the same 2-of-3 cosign (Alex Bot / Alex / Mason) as a treasury op — closes the single-key code-deployment risk.
+  - Squad: multisig PDA `7nRuVw3VZFC6z85tYVDitPnaUHZCkqLpJRSTBNtPmtZB`, threshold 2, autonomous (config changes require a member vote). Squads V4 program `SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf`.
+  - Migration was verified end-to-end: created the Squad, proved vault execution with a trivial transaction, transferred authority, then rehearsed a full no-op program upgrade through the Squad (propose → approve ×2 → execute). turf_vault re-deployed at slot 463533624 via the Squad path.
+  - **`anchor deploy` no longer works.** Upgrades go through `scripts/squad-upgrade.js` — see CLAUDE.md "Deploying an upgrade".
+  - Known caveat: while operated autonomously (Alex Bot + Mason keys both in the operator's 1Password), the 2-of-3 is effectively single-trust-domain. Genuine 2-of-3 protection requires Alex + Mason to hold keys in separate domains — tracked as a follow-up.
+
 ## [0.11.1] - 2026-05-19
 
 ### Fixed

@@ -182,13 +182,49 @@ anchor build
 
 # Test (starts local validator automatically)
 anchor test
+```
 
-# Deploy to devnet
-solana config set --url devnet
-anchor deploy --provider.cluster devnet
+### Deploying an upgrade (OPSEC-002 — Squads multisig)
 
-# Verify deployment
-solana program show 7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J
+**`anchor deploy` no longer works.** As of 2026-05-19 the program upgrade
+authority is a Squads V4 2-of-3 multisig (Alex Bot / Alex / Mason), not a
+single keypair. Every upgrade goes through the Squad. Config + the reusable
+tool live in `scripts/`:
+
+```bash
+# 1. Build
+anchor build
+
+# 2. Write the new program binary to a buffer account
+solana program write-buffer target/deploy/turf_vault.so --url devnet
+#    → prints "Buffer: <BUFFER_ADDR>"
+
+# 3. Hand the buffer to the Squad vault (buffer authority must match the
+#    program's upgrade authority for the upgrade instruction to accept it)
+solana program set-buffer-authority <BUFFER_ADDR> \
+  --new-buffer-authority BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC --url devnet
+
+# 4. Run the Squad upgrade: wraps the BPF `upgrade` instruction in a Squad
+#    vault transaction → propose → approve (Alex Bot) → approve (Mason) →
+#    execute. Keys come from 1Password (agent.solana, agent.mason.solana).
+ALEX_BOT_KEY=$(op item get agent.solana       --vault agents --fields "private key" --reveal) \
+MASON_KEY=$(op item get agent.mason.solana    --vault agents --fields "private key" --reveal) \
+  node scripts/squad-upgrade.js <BUFFER_ADDR>
+
+# 5. Verify
+solana program show Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT --url devnet
+#    → "Last Deployed In Slot" should be recent
+```
+
+Any 2 of the 3 members can approve. `scripts/squad-upgrade.js` uses Alex Bot
++ Mason because their keys are in 1Password; to cosign with Alex's Phantom
+instead, use the Squads app (https://app.squads.so, devnet). Squad addresses
+are in `scripts/squad.json`. Full migration story: `docs/agents/system/
+squads-upgrade-authority-migration.md` in mcritchie-studio.
+
+```bash
+# Verify current state
+solana program show Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT --url devnet
 ```
 
 ### `anchor test` Workaround
