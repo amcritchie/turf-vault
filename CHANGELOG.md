@@ -2,6 +2,15 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased] - 2026-05-18 (post-v0.11.0)
+
+### Changed
+- **Program ID migrated**: `7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J` → `Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT` on devnet.
+  - `target/deploy/turf_vault-keypair.json` had drifted from `declare_id!()` (regenerated on May 16). Initial `anchor deploy` after the build minted a fresh program at the new keypair address; every instruction call returned 4100 (DeclaredProgramIdMismatch).
+  - Adopted the new ID end-to-end (lib.rs `declare_id!()` + Anchor.toml `[programs.{localnet,devnet}]`) since the original `7Hy8…r2J` upgrade authority `9Fy8P3DvKBh3awt1wr27g4CDh47oDqmJR2FAAQ1bc69D` is no longer in our possession.
+  - ~3.45 SOL of rent stays locked at the orphaned `7Hy8…r2J` forever (devnet only).
+  - Fresh on-chain state on the new program: VaultState `FYBTB5pwoSxN4CF5M45gW3e8hwMNFit6phbgyd4vpWAn` (2-of-3 Alex Bot / Alex / Mason), Season 1 PDA `C88QKhevowD7c3xQDZ3grfdHbpk4FeyYDtdkjz4nz924` (schedule `[25, 19, 14, 10, 7]`), IDL account `66fFnyBykZRKrbU3dGzkd8udoadgMtH2u9XCj9nA5x75`.
+
 ## [0.11.0] - 2026-05-18
 
 ### Added
