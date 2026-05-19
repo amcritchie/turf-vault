@@ -249,6 +249,13 @@ bin/rails solana:init_vault INIT=true SIGNERS=addr1,addr2,addr3 THRESHOLD=2
   3. Commit: `git commit -m "v0.X.Y: description"`
   4. Tag: `git tag -a v0.X.Y -m "description"`
   5. Push: `git push origin main --tags`
+  6. **Re-pin the IDL hash in turf-monster** (OPSEC-014). The on-chain IDL is overwritten on every deploy; production boots refuse to start when the committed IDL hash ≠ `EXPECTED_IDL_HASH`. Do not skip — running prod against a drifted IDL silently corrupts every Borsh decode.
+     ```bash
+     cd /Users/alex/projects/turf-monster
+     anchor idl fetch <PROGRAM_ID> --provider.cluster <NETWORK> > config/turf_vault.idl.json
+     bin/rails solana:idl_hash                 # prints SHA256 + the heroku command
+     # Run that heroku config:set, commit the IDL JSON, deploy turf-monster.
+     ```
 
 ## Integration with Turf Monster
 
