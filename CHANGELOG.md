@@ -2,9 +2,24 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased] - 2026-05-19 (post-v0.11.1)
+## [0.12.0] - 2026-05-19
 
-### Security / Operations
+First release deployed through the Squads multisig (see OPSEC-002 below).
+Five instruction-hardening fixes from the pre-prod audit — no account
+layout changes, so no migration needed.
+
+### Fixed
+- **OPSEC-004 — enter_contest_with_token consumed tokens without owner consent (CRITICAL).** The `wallet` account was an `UncheckedAccount`; only `payer` (any 1-of-3 vault signer) had to sign. A compromised Alex Bot key could burn ANY user's `EntryTokenAccount`. `wallet` is now a required `Signer` — for managed (web2) wallets the server co-signs with the user's custodial keypair, so a leaked admin key alone is no longer sufficient.
+- **OPSEC-024 — enter_contest_direct had no payer gating (HIGH).** The `vault_state` account lacked the `is_signer(&payer.key())` constraint that every other entry instruction has, diverging from the documented "1-of-3" auth model and letting anyone construct a direct-entry TX. Constraint added.
+- **OPSEC-025 — create_contest payout sum used wrapping arithmetic (HIGH).** `payout_amounts.iter().sum::<u64>()` wraps silently; `[u64::MAX, 1]` sums to 0 and would pass an equality check against `prizes=0`. Now a `checked_add` fold → `Overflow`.
+- **OPSEC-026 — force_close_vault was replayable forever (HIGH).** The migration-only instruction had no guard against running on a current-schema vault — 2 compromised signers could brick the live vault at any time. Now refuses when `data.len() == 8 + VaultState::INIT_SPACE` (`AccountAlreadyMigrated`).
+- **OPSEC-027 — update_signers could lock out the multisig (HIGH).** Two compromised signers could rotate to 3 attacker addresses, stranding the legitimate third party. Now requires continuity — at least one of the two cosigners authorizing the update must remain in the new set (`SignerContinuityRequired`, 6017).
+
+### Added
+- New error `SignerContinuityRequired` (6017).
+- Tests: `rejects create_contest with overflowing payout_amounts (OPSEC-025)`, `rejects update_signers that drops all current cosigners (OPSEC-027)`. The three `enter_contest_with_token` tests now sign as `wallet`. 43 tests pass.
+
+### Operations
 - **OPSEC-002 — program upgrade authority migrated to a Squads 2-of-3 multisig (devnet).**
   - Upgrade authority moved from the single keypair `4AQMNwhyZtsaCLx3Dv9G5a2rXaJ6M221FYQw6sommRWz` to the Squads V4 vault PDA `BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC`. A program upgrade now requires the same 2-of-3 cosign (Alex Bot / Alex / Mason) as a treasury op — closes the single-key code-deployment risk.
   - Squad: multisig PDA `7nRuVw3VZFC6z85tYVDitPnaUHZCkqLpJRSTBNtPmtZB`, threshold 2, autonomous (config changes require a member vote). Squads V4 program `SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf`.

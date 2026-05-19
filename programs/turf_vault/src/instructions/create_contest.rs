@@ -53,8 +53,14 @@ pub fn handle_create_contest(
     payout_amounts: Vec<u64>,
     prizes: u64,
 ) -> Result<()> {
-    // Validate payout_amounts sum == prizes
-    let total_payouts: u64 = payout_amounts.iter().sum();
+    // Validate payout_amounts sum == prizes.
+    // OPSEC-025: iter().sum::<u64>() wraps silently on overflow in release
+    // builds — a crafted payout_amounts like [u64::MAX, 1] would sum to 0 and
+    // pass an equality check against prizes=0. Use checked addition.
+    let total_payouts: u64 = payout_amounts
+        .iter()
+        .try_fold(0u64, |acc, &x| acc.checked_add(x))
+        .ok_or(VaultError::Overflow)?;
     require!(total_payouts == prizes, VaultError::InvalidPayoutTiers);
 
     let contest = &mut ctx.accounts.contest;

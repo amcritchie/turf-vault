@@ -22,6 +22,20 @@ pub fn handle_update_signers(ctx: Context<UpdateSigners>, new_signers: [Pubkey; 
     require!(new_threshold >= 1 && new_threshold <= 3, VaultError::InvalidThreshold);
     require!(new_signers[0] != new_signers[1] && new_signers[0] != new_signers[2] && new_signers[1] != new_signers[2], VaultError::DuplicateSigner);
 
+    // OPSEC-027: require continuity — at least one of the two cosigners who
+    // authorized THIS update must remain in the new set. Without this, two
+    // compromised signers could rotate to three attacker-controlled
+    // addresses, locking out the legitimate third party with no recovery
+    // path. Continuity guarantees a known-good key always survives a
+    // rotation (and catches a fat-fingered Phantom paste that would
+    // otherwise brick the multisig).
+    let admin_key = ctx.accounts.admin.key();
+    let cosigner_key = ctx.accounts.cosigner.key();
+    require!(
+        new_signers.contains(&admin_key) || new_signers.contains(&cosigner_key),
+        VaultError::SignerContinuityRequired
+    );
+
     let vault = &mut ctx.accounts.vault_state;
     vault.signers = new_signers;
     vault.threshold = new_threshold;

@@ -378,6 +378,44 @@ describe("turf_vault", () => {
         expect(err.toString()).to.contain("Unauthorized");
       }
     });
+
+    it("rejects create_contest with overflowing payout_amounts (OPSEC-025)", async () => {
+      // payout_amounts = [u64::MAX, 1] sums (wrapping) to 0. With prizes=0 the
+      // old `iter().sum()` would have passed the equality check. checked_add
+      // must catch the overflow instead.
+      const overflowContestId = createHash("sha256").update("opsec-025-overflow").digest();
+      const [overflowContestPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("contest"), overflowContestId],
+        program.programId
+      );
+      const U64_MAX = new anchor.BN("18446744073709551615");
+
+      try {
+        await program.methods
+          .createContest(
+            Array.from(overflowContestId) as any,
+            new anchor.BN(toTokenAmount(9)),
+            5,
+            [U64_MAX, new anchor.BN(1)],
+            new anchor.BN(0)
+          )
+          .accountsStrict({
+            payer: admin.publicKey,
+            creator: admin.publicKey,
+            vaultState: vaultStatePda,
+            contest: overflowContestPda,
+            mint: usdcMint,
+            creatorTokenAccount: adminUsdcAccount,
+            vaultTokenAccount: vaultUsdcPda,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("Overflow");
+      }
+    });
   });
 
   describe("season + seed schedule", () => {
@@ -1449,6 +1487,32 @@ describe("turf_vault", () => {
         expect(err.toString()).to.contain("DuplicateSigner");
       }
     });
+
+    it("rejects update_signers that drops all current cosigners (OPSEC-027)", async () => {
+      // Rotate to 3 fresh keypairs — none of which is the admin or cosigner
+      // who authorized this update. Continuity check must reject it.
+      const fresh1 = Keypair.generate();
+      const fresh2 = Keypair.generate();
+      const fresh3 = Keypair.generate();
+      try {
+        await program.methods
+          .updateSigners([fresh1.publicKey, fresh2.publicKey, fresh3.publicKey], 2)
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: signer2.publicKey,
+            vaultState: vaultStatePda,
+          })
+          .signers([signer2])
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("SignerContinuityRequired");
+      }
+
+      // Sanity: vault signers unchanged after the rejected update
+      const vault = await program.account.vaultState.fetch(vaultStatePda);
+      expect(vault.signers[0].toBase58()).to.equal(admin.publicKey.toBase58());
+    });
   });
 
   describe("mint_entry_token", () => {
@@ -1681,6 +1745,7 @@ describe("turf_vault", () => {
           season: defaultSeasonPda,
           systemProgram: SystemProgram.programId,
         })
+        .signers([user1]) // OPSEC-004: wallet is now a required Signer
         .rpc();
 
       // Token is now consumed and timestamp stamped
@@ -1757,6 +1822,7 @@ describe("turf_vault", () => {
             season: defaultSeasonPda,
             systemProgram: SystemProgram.programId,
           })
+          .signers([user1]) // OPSEC-004: wallet is now a required Signer
           .rpc();
         expect.fail("Should have thrown");
       } catch (err) {
@@ -1811,6 +1877,7 @@ describe("turf_vault", () => {
             season: defaultSeasonPda,
             systemProgram: SystemProgram.programId,
           })
+          .signers([user2]) // OPSEC-004: wallet is now a required Signer
           .rpc();
         expect.fail("Should have thrown");
       } catch (err) {

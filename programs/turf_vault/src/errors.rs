@@ -36,4 +36,6 @@ pub enum VaultError {
     EntryTokenAlreadyConsumed,
     #[msg("Entry token owner does not match the wallet entering the contest")]
     EntryTokenWrongOwner,
+    #[msg("New signer set must retain at least one current cosigner")]
+    SignerContinuityRequired,
 }

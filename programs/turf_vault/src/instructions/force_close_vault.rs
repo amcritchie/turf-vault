@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use crate::state::VaultState;
 use crate::errors::VaultError;
 
 /// Migration-only instruction: closes the old VaultState account so it can be
@@ -34,6 +35,18 @@ pub fn handle_force_close_vault(ctx: Context<ForceCloseVault>) -> Result<()> {
     // Layout: 8-byte discriminator + 3 x 32-byte signers = 104 bytes minimum
     // We read all 3 signers and verify both admin and cosigner are in the array
     require!(data.len() >= 104, VaultError::Unauthorized);
+
+    // OPSEC-026: force_close is migration-ONLY — it exists to close a vault
+    // whose on-chain layout is STALE (different size from the current
+    // schema) so it can be re-initialized. Refuse to run against a vault
+    // that's already at the current schema size: there's nothing to
+    // migrate, and closing it would brick a healthy program. Without this
+    // guard the instruction was replayable forever — 2 compromised signers
+    // could DoS the live vault at any time.
+    require!(
+        data.len() != 8 + VaultState::INIT_SPACE,
+        VaultError::AccountAlreadyMigrated
+    );
 
     let signer0 = Pubkey::try_from(&data[8..40])
         .map_err(|_| error!(VaultError::Unauthorized))?;

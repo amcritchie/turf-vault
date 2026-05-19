@@ -204,9 +204,11 @@ solana program write-buffer target/deploy/turf_vault.so --url devnet
 solana program set-buffer-authority <BUFFER_ADDR> \
   --new-buffer-authority BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC --url devnet
 
-# 4. Run the Squad upgrade: wraps the BPF `upgrade` instruction in a Squad
-#    vault transaction → propose → approve (Alex Bot) → approve (Mason) →
-#    execute. Keys come from 1Password (agent.solana, agent.mason.solana).
+# 4. Run the Squad upgrade. The script auto-extends the ProgramData account
+#    first if the new binary is larger (the bare BPF `upgrade` instruction
+#    doesn't grow it the way `solana program deploy` does), then wraps the
+#    `upgrade` in a Squad vault transaction → propose → approve (Alex Bot)
+#    → approve (Mason) → execute. Keys from 1Password.
 ALEX_BOT_KEY=$(op item get agent.solana       --vault agents --fields "private key" --reveal) \
 MASON_KEY=$(op item get agent.mason.solana    --vault agents --fields "private key" --reveal) \
   node scripts/squad-upgrade.js <BUFFER_ADDR>

@@ -13,9 +13,13 @@ pub struct EnterContestWithToken<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
 
-    /// The wallet that owns the user account (may differ from payer for custodial).
-    /// CHECK: Validated via user_account PDA seeds; also must match entry_token.owner.
-    pub wallet: UncheckedAccount<'info>,
+    /// The wallet that owns the user account + the entry token being consumed.
+    /// OPSEC-004: now a required Signer. Previously an UncheckedAccount, which
+    /// let any 1-of-3 vault signer (e.g. a compromised Alex Bot key) burn ANY
+    /// user's entry token without the owner's consent. For managed (web2)
+    /// wallets the server co-signs with the user's custodial keypair — so a
+    /// leaked admin key alone is no longer sufficient to consume tokens.
+    pub wallet: Signer<'info>,
 
     #[account(
         seeds = [b"vault"],

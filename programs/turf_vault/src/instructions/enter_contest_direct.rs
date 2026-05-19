@@ -24,9 +24,15 @@ pub struct EnterContestDirect<'info> {
     )]
     pub user_account: Account<'info, UserAccount>,
 
+    // OPSEC-024: gate the payer to a vault signer. Previously unconstrained,
+    // which diverged from the documented "enter_contest_direct → 1-of-3" auth
+    // model and let anyone construct a direct-entry TX (front-running entry_num
+    // allocation, entering contests Rails hasn't surfaced). Rails already uses
+    // Alex Bot as payer, so the legit flow is unaffected.
     #[account(
         seeds = [b"vault"],
         bump = vault_state.bump,
+        constraint = vault_state.is_signer(&payer.key()) @ VaultError::Unauthorized,
     )]
     pub vault_state: Account<'info, VaultState>,
 
