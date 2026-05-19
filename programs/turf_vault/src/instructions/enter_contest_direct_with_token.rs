@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use crate::state::{VaultState, UserAccount, Contest, ContestEntry, ContestStatus, EntryStatus, EntryTokenAccount};
+use crate::state::{VaultState, UserAccount, Contest, ContestEntry, ContestStatus, EntryStatus, EntryTokenAccount, Season};
 use crate::errors::VaultError;
 
 /// Direct entry funded by an EntryTokenAccount (no USDC transferred).
@@ -63,6 +63,9 @@ pub struct EnterContestDirectWithToken<'info> {
     )]
     pub entry_token: Account<'info, EntryTokenAccount>,
 
+    /// Season whose seed_schedule controls per-entry seed awards.
+    pub season: Account<'info, Season>,
+
     pub system_program: Program<'info, System>,
 }
 
@@ -72,14 +75,17 @@ pub fn handle_enter_contest_direct_with_token(
 ) -> Result<()> {
     let contest = &mut ctx.accounts.contest;
     let entry_token = &mut ctx.accounts.entry_token;
+    let season = &ctx.accounts.season;
 
     // NOTE: No USDC transfer occurs. The token IS the payment.
     // `contest.entry_fees` is NOT incremented (no fee collected).
     contest.current_entries = contest.current_entries.checked_add(1).ok_or(VaultError::Overflow)?;
 
-    // Award 65 seeds (token entries still progress the user's level)
+    // Award seeds from the season schedule (token entries still progress the user's level)
+    // Entries 5+ clamp to slot 4.
     let user_account = &mut ctx.accounts.user_account;
-    user_account.seeds = user_account.seeds.checked_add(65).ok_or(VaultError::Overflow)?;
+    let idx = (entry_num as usize).min(4);
+    user_account.seeds = user_account.seeds.checked_add(season.seed_schedule[idx]).ok_or(VaultError::Overflow)?;
 
     // Consume the entry token
     let now = Clock::get()?.unix_timestamp;

@@ -48,6 +48,25 @@ describe("turf_vault", () => {
   const DECIMALS = 6;
   const toTokenAmount = (dollars: number) => dollars * 10 ** DECIMALS;
 
+  // Default season used by all entry tests (created in the season describe block)
+  const DEFAULT_SEASON_ID = 1;
+  const DEFAULT_SEED_SCHEDULE = [25, 19, 14, 10, 7] as const;
+  const deriveSeasonPda = (seasonId: number): PublicKey => {
+    const buf = Buffer.alloc(4);
+    buf.writeUInt32LE(seasonId);
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("season"), buf],
+      program.programId
+    );
+    return pda;
+  };
+  const makeSeasonName = (s: string): number[] => {
+    const buf = Buffer.alloc(32);
+    buf.write(s, 0, "utf8");
+    return Array.from(buf);
+  };
+  let defaultSeasonPda: PublicKey;
+
   before(async () => {
     // Create test users and fund them
     user1 = Keypair.generate();
@@ -361,6 +380,385 @@ describe("turf_vault", () => {
     });
   });
 
+  describe("season + seed schedule", () => {
+    it("admin creates season_id=1 with schedule [25, 19, 14, 10, 7]", async () => {
+      defaultSeasonPda = deriveSeasonPda(DEFAULT_SEASON_ID);
+      const name = makeSeasonName("World Cup 2026");
+      const schedule = DEFAULT_SEED_SCHEDULE.map((n) => new anchor.BN(n));
+      const startAt = new anchor.BN(Math.floor(Date.now() / 1000));
+
+      await program.methods
+        .createSeason(DEFAULT_SEASON_ID, name, schedule as any, startAt)
+        .accountsStrict({
+          admin: admin.publicKey,
+          vaultState: vaultStatePda,
+          season: defaultSeasonPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const season = await program.account.season.fetch(defaultSeasonPda);
+      expect(season.seasonId).to.equal(DEFAULT_SEASON_ID);
+      expect(Array.from(season.name)).to.deep.equal(name);
+      expect(season.seedSchedule.map((s: anchor.BN) => s.toNumber())).to.deep.equal([
+        25, 19, 14, 10, 7,
+      ]);
+      expect(season.startAt.toNumber()).to.equal(startAt.toNumber());
+      expect(season.createdAt.toNumber()).to.be.greaterThan(0);
+      expect(season.bump).to.be.greaterThan(0);
+    });
+
+    it("rejects duplicate season_id", async () => {
+      const name = makeSeasonName("Duplicate Season");
+      const schedule = DEFAULT_SEED_SCHEDULE.map((n) => new anchor.BN(n));
+      const startAt = new anchor.BN(Math.floor(Date.now() / 1000));
+
+      try {
+        await program.methods
+          .createSeason(DEFAULT_SEASON_ID, name, schedule as any, startAt)
+          .accountsStrict({
+            admin: admin.publicKey,
+            vaultState: vaultStatePda,
+            season: defaultSeasonPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        const msg = err.toString();
+        const looksLikeAlreadyInit =
+          msg.includes("already in use") ||
+          msg.includes("custom program error: 0x0") ||
+          msg.includes("custom program error: 0") ||
+          msg.includes("AccountAlreadyInitialized");
+        expect(looksLikeAlreadyInit, `Expected an "already in use" error, got: ${msg}`).to.equal(
+          true
+        );
+      }
+    });
+
+    it("rejects non-admin create_season", async () => {
+      const nonAdminSeasonId = 999;
+      const nonAdminPda = deriveSeasonPda(nonAdminSeasonId);
+      const name = makeSeasonName("Unauthorized");
+      const schedule = DEFAULT_SEED_SCHEDULE.map((n) => new anchor.BN(n));
+      const startAt = new anchor.BN(Math.floor(Date.now() / 1000));
+
+      try {
+        await program.methods
+          .createSeason(nonAdminSeasonId, name, schedule as any, startAt)
+          .accountsStrict({
+            admin: user1.publicKey,
+            vaultState: vaultStatePda,
+            season: nonAdminPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([user1])
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("Unauthorized");
+      }
+    });
+
+    it("entry index 0 awards schedule[0] = 25 seeds", async () => {
+      // Fresh user for clean before/after seed deltas
+      const seedTestUser = Keypair.generate();
+      const fundTx = new anchor.web3.Transaction().add(
+        anchor.web3.SystemProgram.transfer({
+          fromPubkey: admin.publicKey,
+          toPubkey: seedTestUser.publicKey,
+          lamports: LAMPORTS_PER_SOL,
+        })
+      );
+      await provider.sendAndConfirm(fundTx);
+
+      const [userPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("user"), seedTestUser.publicKey.toBuffer()],
+        program.programId
+      );
+
+      // Create user account
+      await program.methods
+        .createUserAccount(seedTestUser.publicKey)
+        .accountsStrict({
+          payer: admin.publicKey,
+          userAccount: userPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      // Fund balance so the entry fee can be debited
+      const userUsdc = await createAccount(connection, admin.payer, usdcMint, seedTestUser.publicKey);
+      await mintTo(connection, admin.payer, usdcMint, userUsdc, admin.publicKey, toTokenAmount(50));
+      await program.methods
+        .deposit(new anchor.BN(toTokenAmount(20)))
+        .accountsStrict({
+          user: seedTestUser.publicKey,
+          userAccount: userPda,
+          vaultState: vaultStatePda,
+          mint: usdcMint,
+          userTokenAccount: userUsdc,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([seedTestUser])
+        .rpc();
+
+      // Fresh contest for this test
+      const cId = createHash("sha256").update("seed-idx-0-test").digest();
+      const [cPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("contest"), cId],
+        program.programId
+      );
+      await program.methods
+        .createContest(
+          Array.from(cId) as any,
+          new anchor.BN(toTokenAmount(9)),
+          5,
+          [],
+          new anchor.BN(0)
+        )
+        .accountsStrict({
+          payer: admin.publicKey,
+          creator: admin.publicKey,
+          vaultState: vaultStatePda,
+          contest: cPda,
+          mint: usdcMint,
+          creatorTokenAccount: adminUsdcAccount,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      // Enter at entry_num=0 → should award schedule[0]=25
+      const before = await program.account.userAccount.fetch(userPda);
+
+      const entryNumBytes = Buffer.alloc(4);
+      entryNumBytes.writeUInt32LE(0);
+      const [ePda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("entry"), cId, seedTestUser.publicKey.toBuffer(), entryNumBytes],
+        program.programId
+      );
+
+      await program.methods
+        .enterContest(0)
+        .accountsStrict({
+          payer: admin.publicKey,
+          wallet: seedTestUser.publicKey,
+          vaultState: vaultStatePda,
+          userAccount: userPda,
+          contest: cPda,
+          contestEntry: ePda,
+          season: defaultSeasonPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const after = await program.account.userAccount.fetch(userPda);
+      expect(after.seeds.toNumber() - before.seeds.toNumber()).to.equal(25);
+    });
+
+    it("entries 0, 1, 2 award 25 + 19 + 14 = 58 seeds", async () => {
+      // Fresh user to isolate the delta
+      const cumUser = Keypair.generate();
+      const fundTx = new anchor.web3.Transaction().add(
+        anchor.web3.SystemProgram.transfer({
+          fromPubkey: admin.publicKey,
+          toPubkey: cumUser.publicKey,
+          lamports: LAMPORTS_PER_SOL,
+        })
+      );
+      await provider.sendAndConfirm(fundTx);
+
+      const [userPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("user"), cumUser.publicKey.toBuffer()],
+        program.programId
+      );
+
+      await program.methods
+        .createUserAccount(cumUser.publicKey)
+        .accountsStrict({
+          payer: admin.publicKey,
+          userAccount: userPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const userUsdc = await createAccount(connection, admin.payer, usdcMint, cumUser.publicKey);
+      await mintTo(connection, admin.payer, usdcMint, userUsdc, admin.publicKey, toTokenAmount(100));
+      await program.methods
+        .deposit(new anchor.BN(toTokenAmount(50)))
+        .accountsStrict({
+          user: cumUser.publicKey,
+          userAccount: userPda,
+          vaultState: vaultStatePda,
+          mint: usdcMint,
+          userTokenAccount: userUsdc,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([cumUser])
+        .rpc();
+
+      // Fresh contest with max_entries=3 so we can enter at indices 0, 1, 2
+      const cId = createHash("sha256").update("seed-cumulative-test").digest();
+      const [cPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("contest"), cId],
+        program.programId
+      );
+      await program.methods
+        .createContest(
+          Array.from(cId) as any,
+          new anchor.BN(toTokenAmount(9)),
+          3,
+          [],
+          new anchor.BN(0)
+        )
+        .accountsStrict({
+          payer: admin.publicKey,
+          creator: admin.publicKey,
+          vaultState: vaultStatePda,
+          contest: cPda,
+          mint: usdcMint,
+          creatorTokenAccount: adminUsdcAccount,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const before = await program.account.userAccount.fetch(userPda);
+
+      for (const entryNum of [0, 1, 2]) {
+        const eBytes = Buffer.alloc(4);
+        eBytes.writeUInt32LE(entryNum);
+        const [ePda] = PublicKey.findProgramAddressSync(
+          [Buffer.from("entry"), cId, cumUser.publicKey.toBuffer(), eBytes],
+          program.programId
+        );
+
+        await program.methods
+          .enterContest(entryNum)
+          .accountsStrict({
+            payer: admin.publicKey,
+            wallet: cumUser.publicKey,
+            vaultState: vaultStatePda,
+            userAccount: userPda,
+            contest: cPda,
+            contestEntry: ePda,
+            season: defaultSeasonPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+      }
+
+      const after = await program.account.userAccount.fetch(userPda);
+      // schedule[0] + schedule[1] + schedule[2] = 25 + 19 + 14 = 58
+      expect(after.seeds.toNumber() - before.seeds.toNumber()).to.equal(58);
+    });
+
+    it("entry index 7 clamps to schedule[4] = 7 seeds", async () => {
+      // Create a season with max_entries large enough to accept entry_num=7.
+      // We'll use a fresh contest with max_entries=10 and just enter once with
+      // entry_num=7 (no need to enter 0..6 first — entry PDA seeds include
+      // entry_num, so each entry_num is independent).
+      const clampUser = Keypair.generate();
+      const fundTx = new anchor.web3.Transaction().add(
+        anchor.web3.SystemProgram.transfer({
+          fromPubkey: admin.publicKey,
+          toPubkey: clampUser.publicKey,
+          lamports: LAMPORTS_PER_SOL,
+        })
+      );
+      await provider.sendAndConfirm(fundTx);
+
+      const [userPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("user"), clampUser.publicKey.toBuffer()],
+        program.programId
+      );
+
+      await program.methods
+        .createUserAccount(clampUser.publicKey)
+        .accountsStrict({
+          payer: admin.publicKey,
+          userAccount: userPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const userUsdc = await createAccount(connection, admin.payer, usdcMint, clampUser.publicKey);
+      await mintTo(connection, admin.payer, usdcMint, userUsdc, admin.publicKey, toTokenAmount(50));
+      await program.methods
+        .deposit(new anchor.BN(toTokenAmount(20)))
+        .accountsStrict({
+          user: clampUser.publicKey,
+          userAccount: userPda,
+          vaultState: vaultStatePda,
+          mint: usdcMint,
+          userTokenAccount: userUsdc,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([clampUser])
+        .rpc();
+
+      const cId = createHash("sha256").update("seed-clamp-test").digest();
+      const [cPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("contest"), cId],
+        program.programId
+      );
+      await program.methods
+        .createContest(
+          Array.from(cId) as any,
+          new anchor.BN(toTokenAmount(9)),
+          10,
+          [],
+          new anchor.BN(0)
+        )
+        .accountsStrict({
+          payer: admin.publicKey,
+          creator: admin.publicKey,
+          vaultState: vaultStatePda,
+          contest: cPda,
+          mint: usdcMint,
+          creatorTokenAccount: adminUsdcAccount,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const before = await program.account.userAccount.fetch(userPda);
+
+      const eBytes = Buffer.alloc(4);
+      eBytes.writeUInt32LE(7);
+      const [ePda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("entry"), cId, clampUser.publicKey.toBuffer(), eBytes],
+        program.programId
+      );
+
+      await program.methods
+        .enterContest(7)
+        .accountsStrict({
+          payer: admin.publicKey,
+          wallet: clampUser.publicKey,
+          vaultState: vaultStatePda,
+          userAccount: userPda,
+          contest: cPda,
+          contestEntry: ePda,
+          season: defaultSeasonPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const after = await program.account.userAccount.fetch(userPda);
+      // entry_num=7 clamps to slot 4 → schedule[4]=7
+      expect(after.seeds.toNumber() - before.seeds.toNumber()).to.equal(7);
+    });
+  });
+
   describe("enter_contest", () => {
     it("user1 enters the contest", async () => {
       const [userAccountPda] = PublicKey.findProgramAddressSync(
@@ -395,6 +793,7 @@ describe("turf_vault", () => {
           userAccount: userAccountPda,
           contest: contestPda,
           contestEntry: entryPda,
+          season: defaultSeasonPda,
           systemProgram: SystemProgram.programId,
         })
         .rpc();
@@ -407,8 +806,8 @@ describe("turf_vault", () => {
       expect(userAfter.balance.toNumber()).to.equal(
         userBefore.balance.toNumber() - toTokenAmount(9)
       );
-      // 65 seeds awarded
-      expect(userAfter.seeds.toNumber()).to.equal(65);
+      // entry_num=1 → seed_schedule[1] = 19 seeds awarded
+      expect(userAfter.seeds.toNumber() - userBefore.seeds.toNumber()).to.equal(19);
       // Contest pool increased
       expect(contest.currentEntries).to.equal(1);
       expect(contest.entryFees.toNumber()).to.equal(toTokenAmount(9));
@@ -440,6 +839,8 @@ describe("turf_vault", () => {
         program.programId
       );
 
+      const user2Before = await program.account.userAccount.fetch(userAccountPda);
+
       await program.methods
         .enterContest(entryNum)
         .accountsStrict({
@@ -449,6 +850,7 @@ describe("turf_vault", () => {
           userAccount: userAccountPda,
           contest: contestPda,
           contestEntry: entryPda,
+          season: defaultSeasonPda,
           systemProgram: SystemProgram.programId,
         })
         .rpc();
@@ -457,9 +859,9 @@ describe("turf_vault", () => {
       expect(contest.currentEntries).to.equal(2);
       expect(contest.entryFees.toNumber()).to.equal(toTokenAmount(18));
 
-      // 65 seeds awarded to user2
+      // entry_num=1 → seed_schedule[1] = 19 seeds awarded
       const user2After = await program.account.userAccount.fetch(userAccountPda);
-      expect(user2After.seeds.toNumber()).to.equal(65);
+      expect(user2After.seeds.toNumber() - user2Before.seeds.toNumber()).to.equal(19);
     });
 
     it("rejects entry with insufficient balance", async () => {
@@ -515,6 +917,7 @@ describe("turf_vault", () => {
             userAccount: brokeUserPda,
             contest: contestPda,
             contestEntry: entryPda,
+            season: defaultSeasonPda,
             systemProgram: SystemProgram.programId,
           })
           .rpc();
@@ -1219,6 +1622,7 @@ describe("turf_vault", () => {
           contest: tokenEntryContestPda,
           contestEntry: entryPda,
           entryToken: entryTokenPda,
+          season: defaultSeasonPda,
           systemProgram: SystemProgram.programId,
         })
         .rpc();
@@ -1229,9 +1633,9 @@ describe("turf_vault", () => {
       expect(tokenAfter.consumedAt).to.not.equal(null);
       expect((tokenAfter.consumedAt as anchor.BN).toNumber()).to.be.greaterThan(0);
 
-      // Seeds incremented by 65
+      // entry_num=1 → seed_schedule[1] = 19 seeds awarded
       const userAfter = await program.account.userAccount.fetch(userAccountPda);
-      expect(userAfter.seeds.toNumber()).to.equal(userBefore.seeds.toNumber() + 65);
+      expect(userAfter.seeds.toNumber()).to.equal(userBefore.seeds.toNumber() + 19);
 
       // Balance is UNCHANGED (USDC NOT charged)
       expect(userAfter.balance.toNumber()).to.equal(userBefore.balance.toNumber());
@@ -1294,6 +1698,7 @@ describe("turf_vault", () => {
             contest: reuseContestPda,
             contestEntry: entryPda,
             entryToken: consumedTokenPda,
+            season: defaultSeasonPda,
             systemProgram: SystemProgram.programId,
           })
           .rpc();
@@ -1347,6 +1752,7 @@ describe("turf_vault", () => {
             contest: wrongOwnerContestPda,
             contestEntry: entryPda,
             entryToken: user1TokenPda,
+            season: defaultSeasonPda,
             systemProgram: SystemProgram.programId,
           })
           .rpc();
@@ -1399,6 +1805,7 @@ describe("turf_vault", () => {
           userAccount: userAccountPda,
           contest: backCompatContestPda,
           contestEntry: entryPda,
+          season: defaultSeasonPda,
           systemProgram: SystemProgram.programId,
         })
         .rpc();
@@ -1410,8 +1817,8 @@ describe("turf_vault", () => {
       expect(userAfter.balance.toNumber()).to.equal(
         userBefore.balance.toNumber() - toTokenAmount(9)
       );
-      // 65 seeds awarded
-      expect(userAfter.seeds.toNumber()).to.equal(userBefore.seeds.toNumber() + 65);
+      // entry_num=1 → seed_schedule[1] = 19 seeds awarded
+      expect(userAfter.seeds.toNumber()).to.equal(userBefore.seeds.toNumber() + 19);
       // Entry fees collected on the contest
       expect(contestAfter.entryFees.toNumber()).to.equal(
         contestBefore.entryFees.toNumber() + toTokenAmount(9)
@@ -1483,6 +1890,7 @@ describe("turf_vault", () => {
           contest: directContestPda,
           contestEntry: entryPda,
           entryToken: user2TokenPda,
+          season: defaultSeasonPda,
           systemProgram: SystemProgram.programId,
         })
         .signers([user2])
@@ -1493,9 +1901,9 @@ describe("turf_vault", () => {
       expect(tokenAfter.consumed).to.equal(true);
       expect(tokenAfter.consumedAt).to.not.equal(null);
 
-      // Seeds incremented +65
+      // entry_num=1 → seed_schedule[1] = 19 seeds awarded
       const userAfter = await program.account.userAccount.fetch(user2AccountPda);
-      expect(userAfter.seeds.toNumber()).to.equal(userBefore.seeds.toNumber() + 65);
+      expect(userAfter.seeds.toNumber()).to.equal(userBefore.seeds.toNumber() + 19);
 
       // user2's USDC ATA unchanged (NO direct transfer)
       const user2UsdcAfter = await getAccount(connection, user2UsdcAccount);

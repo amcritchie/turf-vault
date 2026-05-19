@@ -2,6 +2,28 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.11.0] - 2026-05-18
+
+### Added
+- `Season` PDA — represents a contest season with an immutable per-entry seed-award schedule
+  - PDA seeds: `[b"season", season_id.to_le_bytes()]` (u32 LE, 4 bytes)
+  - Fields: `season_id` (u32), `name` ([u8; 32], UTF-8 zero-padded), `seed_schedule` ([u64; 5]), `start_at` (i64), `created_at` (i64), `bump` (u8)
+  - `Season::LEN = 101` bytes (8 discriminator + 93 data)
+- `create_season(season_id: u32, name: [u8; 32], seed_schedule: [u64; 5], start_at: i64)` instruction
+  - Admin (any 1-of-3 vault signer) creates a season; PDA-collision on duplicate `season_id` is rejected via Anchor's `init` constraint
+- 6 new tests covering: season creation + field assertions, duplicate `season_id` rejection, non-admin rejection, entry index 0 awards 25, cumulative entries 0/1/2 award 25+19+14=58, entry index 7 clamps to slot 4 (awards 7)
+
+### Changed
+- All 4 entry instructions (`enter_contest`, `enter_contest_direct`, `enter_contest_with_token`, `enter_contest_direct_with_token`) now require a `season` account and award seeds from `season.seed_schedule[entry_num.min(4) as usize]` instead of the hardcoded `+65`
+  - Entries 0-4 use slots 0-4 respectively; entries 5+ clamp to slot 4
+  - Seed addition still uses `checked_add` for overflow safety
+  - `season` is appended at the end of each Context struct, before `system_program` (account list order matters for Rails TX builders)
+- Existing entry-test assertions updated from `+65` to the appropriate schedule slot (entry_num=1 → `seed_schedule[1]` = 19)
+
+### Migration / breaking notes
+- **Breaking instruction signature**: all 4 entry instructions now require an additional `season` account at the end of their account list (before `system_program`). Rails TX builders must be updated.
+- The new account ordering is documented per-instruction in the source file headers.
+
 ## [0.10.0] - 2026-05-18
 
 ### Added

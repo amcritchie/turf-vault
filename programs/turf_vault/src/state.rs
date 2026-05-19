@@ -115,3 +115,32 @@ impl EntryTokenAccount {
     /// + 8 discriminator = 124
     pub const LEN: usize = 8 + 32 + 1 + 64 + 1 + (1 + 8) + 8 + 1;
 }
+
+/// Season: a contest season with a per-entry seed-award schedule.
+/// The schedule is set at season creation and is immutable thereafter.
+/// Entries award `seed_schedule[entry_num.min(4) as usize]` — entries 5+
+/// clamp to slot 4.
+///
+/// PDA seeds: [b"season", season_id.to_le_bytes()] (u32 LE, 4 bytes).
+#[account]
+pub struct Season {
+    pub season_id: u32,
+    pub name: [u8; 32],          // UTF-8 padded with 0x00
+    pub seed_schedule: [u64; 5], // entries 0-4; entry index 5+ clamps to slot 4
+    pub start_at: i64,           // unix timestamp
+    pub created_at: i64,         // unix timestamp
+    pub bump: u8,
+}
+
+impl Season {
+    /// Layout (after 8-byte Anchor discriminator):
+    ///   season_id:      u32          4
+    ///   name:           [u8; 32]    32
+    ///   seed_schedule:  [u64; 5]    40
+    ///   start_at:       i64          8
+    ///   created_at:     i64          8
+    ///   bump:           u8           1
+    /// Subtotal data: 93
+    /// + 8 discriminator = 101
+    pub const LEN: usize = 8 + 4 + 32 + 40 + 8 + 8 + 1;
+}

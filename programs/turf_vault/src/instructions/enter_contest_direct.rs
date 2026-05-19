@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
-use crate::state::{VaultState, UserAccount, Contest, ContestEntry, ContestStatus, EntryStatus};
+use crate::state::{VaultState, UserAccount, Contest, ContestEntry, ContestStatus, EntryStatus, Season};
 use crate::errors::VaultError;
 
 /// Direct entry: user transfers USDC from their own wallet ATA to the vault.
@@ -72,6 +72,10 @@ pub struct EnterContestDirect<'info> {
     pub vault_token_account: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
+
+    /// Season whose seed_schedule controls per-entry seed awards.
+    pub season: Account<'info, Season>,
+
     pub system_program: Program<'info, System>,
 }
 
@@ -91,9 +95,11 @@ pub fn handle_enter_contest_direct(ctx: Context<EnterContestDirect>, entry_num: 
     contest.entry_fees = contest.entry_fees.checked_add(contest.entry_fee).ok_or(VaultError::Overflow)?;
     contest.current_entries = contest.current_entries.checked_add(1).ok_or(VaultError::Overflow)?;
 
-    // Award 65 seeds
+    // Award seeds from the season schedule (entries 5+ clamp to slot 4)
     let user_account = &mut ctx.accounts.user_account;
-    user_account.seeds = user_account.seeds.checked_add(65).ok_or(VaultError::Overflow)?;
+    let season = &ctx.accounts.season;
+    let idx = (entry_num as usize).min(4);
+    user_account.seeds = user_account.seeds.checked_add(season.seed_schedule[idx]).ok_or(VaultError::Overflow)?;
 
     // Create entry
     let entry = &mut ctx.accounts.contest_entry;

@@ -89,4 +89,14 @@ pub mod turf_vault {
     ) -> Result<()> {
         handle_enter_contest_direct_with_token(ctx, entry_num)
     }
+
+    pub fn create_season(
+        ctx: Context<CreateSeason>,
+        season_id: u32,
+        name: [u8; 32],
+        seed_schedule: [u64; 5],
+        start_at: i64,
+    ) -> Result<()> {
+        handle_create_season(ctx, season_id, name, seed_schedule, start_at)
+    }
 }

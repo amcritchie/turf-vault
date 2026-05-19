@@ -1,6 +1,6 @@
 [package]
 name = "turf_vault"
-version = "0.10.0"
+version = "0.11.0"
 description = "Solana escrow program for contest entry fees and prize distribution"
 edition = "2021"
 

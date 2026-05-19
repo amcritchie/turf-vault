@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use crate::state::{VaultState, UserAccount, Contest, ContestEntry, ContestStatus, EntryStatus};
+use crate::state::{VaultState, UserAccount, Contest, ContestEntry, ContestStatus, EntryStatus, Season};
 use crate::errors::VaultError;
 
 #[derive(Accounts)]
@@ -47,12 +47,16 @@ pub struct EnterContest<'info> {
     )]
     pub contest_entry: Account<'info, ContestEntry>,
 
+    /// Season whose seed_schedule controls per-entry seed awards.
+    pub season: Account<'info, Season>,
+
     pub system_program: Program<'info, System>,
 }
 
 pub fn handle_enter_contest(ctx: Context<EnterContest>, entry_num: u32) -> Result<()> {
     let user = &mut ctx.accounts.user_account;
     let contest = &mut ctx.accounts.contest;
+    let season = &ctx.accounts.season;
 
     // Debit entry fee from user balance
     require!(user.balance >= contest.entry_fee, VaultError::InsufficientBalance);
@@ -62,8 +66,9 @@ pub fn handle_enter_contest(ctx: Context<EnterContest>, entry_num: u32) -> Resul
     contest.entry_fees = contest.entry_fees.checked_add(contest.entry_fee).ok_or(VaultError::Overflow)?;
     contest.current_entries = contest.current_entries.checked_add(1).ok_or(VaultError::Overflow)?;
 
-    // Award 65 seeds
-    user.seeds = user.seeds.checked_add(65).ok_or(VaultError::Overflow)?;
+    // Award seeds from the season schedule (entries 5+ clamp to slot 4)
+    let idx = (entry_num as usize).min(4);
+    user.seeds = user.seeds.checked_add(season.seed_schedule[idx]).ok_or(VaultError::Overflow)?;
 
     // Create entry
     let entry = &mut ctx.accounts.contest_entry;
