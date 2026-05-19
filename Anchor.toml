@@ -6,10 +6,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-turf_vault = "7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J"
+turf_vault = "Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT"
 
 [programs.devnet]
-turf_vault = "7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J"
+turf_vault = "Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT"
 
 [registry]
 url = "https://api.apr.dev"

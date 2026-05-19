@@ -6,7 +6,7 @@ pub mod instructions;
 
 use instructions::*;
 
-declare_id!("7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J");
+declare_id!("Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT");
 
 #[program]
 pub mod turf_vault {
