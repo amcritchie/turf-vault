@@ -30,9 +30,9 @@ Troubleshooting guide for autonomous agents. Format: problem, diagnosis, fix.
 - Diagnosis: `Error: Deploying program failed: ... program size exceeds maximum`. Anchor programs have a ~10MB deployed limit.
 - Fix: Check binary size: `ls -la target/deploy/turf_vault.so`. Reduce program size: remove unused instructions, consolidate error messages, use `msg!()` sparingly. Enable size optimization in `Cargo.toml`: `[profile.release] opt-level = "z"`.
 
-**Program authority mismatch**
-- Diagnosis: `anchor deploy` fails because the deploy key doesn't match the program's upgrade authority.
-- Fix: Check authority: `solana program show 7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J --url devnet`. The upgrade authority must match `~/.config/solana/id.json`. If it doesn't, use the correct keypair: `anchor deploy --provider.cluster devnet --provider.wallet <correct_keypair.json>`.
+**`anchor deploy` fails / program authority is the Squads multisig**
+- Diagnosis: `anchor deploy` fails because the program's upgrade authority is not a single keypair. As of 2026-05-19 (OPSEC-002) the upgrade authority is a Squads V4 2-of-3 multisig vault PDA (`BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC`), not `~/.config/solana/id.json`.
+- Fix: Do not use `anchor deploy` — it cannot sign for the Squad. Upgrades go through `scripts/squad-upgrade.js`: build, `solana program write-buffer`, `solana program set-buffer-authority` to the vault PDA, then `node scripts/squad-upgrade.js <BUFFER_ADDR>` (propose → approve ×2 → execute). Full procedure is in CLAUDE.md "Deploying an upgrade". Verify authority: `solana program show Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT --url devnet`.
 
 ## Test Failures
 
@@ -79,17 +79,20 @@ Check balance: `solana balance --url devnet` (uses default keypair) or `solana b
 
 **Procedure** (run from the Turf Monster Rails app):
 ```bash
-# Step 1: Close the old vault (recovers rent SOL to admin)
+# Step 1: Close the old vault (recovers rent SOL). force_close_vault is a
+#         2-of-3 treasury op — the server partially signs and a human cosigns.
 cd /Users/alex/projects/turf-monster
 bin/rails solana:init_vault FORCE_CLOSE=true
 
-# Step 2: Initialize new vault with updated schema
-bin/rails solana:init_vault INIT=true ADMIN_BACKUP=7ZDJp7FUHhuceAqcW9CHe81hCiaMTjgWAXfprBM59Tcr
+# Step 2: Initialize new vault with updated schema and the 3 signers + threshold
+bin/rails solana:init_vault INIT=true \
+  SIGNERS=F6f8h5yynbnkgWvU5abQx3RJxJpe8EoQmeFBuNKdKzhZ,7ZDJp7FUHhuceAqcW9CHe81hCiaMTjgWAXfprBM59Tcr,CytJS23p1zCM2wvUUngiDePtbMB484ebD7bK4nDqWjrR \
+  THRESHOLD=2
 ```
 
-**If force_close fails**: The `force_close_vault` instruction reads admin from raw bytes (bypasses Anchor deserialization). If even that fails, the old program may need to be redeployed with a compatible `force_close` handler.
+**If force_close fails**: The `force_close_vault` instruction reads the signers from raw bytes (bypasses Anchor deserialization) and refuses to run once the vault is already at the current schema (`AccountAlreadyMigrated`). If it still fails, the old program may need to be redeployed with a compatible `force_close` handler.
 
-**After re-init**: Verify vault state: `bin/rails runner "puts Solana::Vault.fetch_vault_state.inspect"`. Check admin and admin_backup are set correctly.
+**After re-init**: Verify vault state: `bin/rails runner "puts Solana::Vault.fetch_vault_state.inspect"`. Check `signers` and `threshold` are set correctly.
 
 ## Transaction Failures
 
@@ -106,20 +109,20 @@ bin/rails solana:init_vault INIT=true ADMIN_BACKUP=7ZDJp7FUHhuceAqcW9CHe81hCiaMT
   - ContestEntry: `[b"entry", contest_id_32_bytes, wallet_pubkey_bytes, entry_num_le_bytes]`
 
 **Unauthorized (error 6000)**
-- Diagnosis: Non-admin tried an admin action. `VaultState.is_admin()` checks both `admin` and `admin_backup`.
-- Fix: Verify the signing key is one of the two admin keys. Primary: `F6f8h5yynbnkgWvU5abQx3RJxJpe8EoQmeFBuNKdKzhZ`. Backup: `7ZDJp7FUHhuceAqcW9CHe81hCiaMTjgWAXfprBM59Tcr`. Check `SOLANA_ADMIN_KEY` env var in the Rails app.
+- Diagnosis: A non-signer tried a privileged action. `VaultState.is_signer()` checks the `signers: [Pubkey; 3]` array; treasury ops additionally require a distinct second signer via `validate_multisig()`.
+- Fix: Verify the signing key is one of the three vault signers — Alex Bot `F6f8h5yynbnkgWvU5abQx3RJxJpe8EoQmeFBuNKdKzhZ`, Alex `7ZDJp7FUHhuceAqcW9CHe81hCiaMTjgWAXfprBM59Tcr`, Mason `CytJS23p1zCM2wvUUngiDePtbMB484ebD7bK4nDqWjrR`. For treasury ops (settle, force_close, update_signers) confirm a second distinct signer also signed. Check `SOLANA_ADMIN_KEY` env var in the Rails app.
 
 **Settlement overflow (error 6008)**
-- Diagnosis: Total payouts in settlement exceed `prize_pool + bonus`. The `settle_contest` instruction validates this.
+- Diagnosis: Total payouts in settlement exceed `entry_fees + prizes`. The `settle_contest` instruction validates this.
 - Fix: Check the Rails grading logic. `Contest#grade!` must ensure `entries.sum(:payout_cents)` <= total pool. Convert cents to u64: `amount_cents * 10_000`.
 
 ## Verifying Deployment
 
 **Check program exists**
 ```bash
-solana program show 7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J --url devnet
+solana program show Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT --url devnet
 ```
-Shows: authority, data length, balance, deploy slot.
+Shows: authority, data length, balance, deploy slot. The upgrade authority is the Squads V4 vault PDA `BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC`.
 
 **Check vault state**
 ```bash
@@ -129,12 +132,12 @@ bin/rails runner "puts Solana::Vault.fetch_vault_state.inspect"
 
 **Check IDL is published**
 ```bash
-anchor idl fetch 7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J --provider.cluster devnet
+anchor idl fetch Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT --provider.cluster devnet
 ```
-IDL account: `DCP2XRu8ZwzsCpXBgu5xa4vTYdYQhKUZRU49iJuFv8Lf`.
+IDL account: `66fFnyBykZRKrbU3dGzkd8udoadgMtH2u9XCj9nA5x75`.
 
 **Compare deployed vs local binary**
 ```bash
 anchor build
-anchor verify 7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J --provider.cluster devnet
+anchor verify Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT --provider.cluster devnet
 ```

@@ -4,19 +4,20 @@
 
 Anchor smart contract for contest escrow on Solana. Backend for Turf Monster (Rails pick'em app).
 
-- **Program ID**: `7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J`
+- **Program ID**: `Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT`
 - **Framework**: Anchor 0.32.1
 - **Rust**: 1.89.0 (via `rust-toolchain.toml`)
 - **Network**: Localnet (dev), Devnet (staging)
-- **Version**: 0.8.0
+- **Version**: 0.13.0
+- **Upgrade authority**: Squads V4 2-of-3 multisig (OPSEC-002 — see "Deploying an upgrade" below). `anchor deploy` no longer works.
 
 ## File Layout
 
 ```
-programs/turf-vault/src/
-├── lib.rs              # Program entry — 12 instruction handlers (thin wrappers)
-├── state.rs            # 4 account structs + 2 enums + multisig helpers
-├── errors.rs           # 13 error codes (VaultError enum)
+programs/turf_vault/src/
+├── lib.rs              # Program entry — 16 instruction handlers (thin wrappers)
+├── state.rs            # 6 account structs + 2 enums + multisig helpers
+├── errors.rs           # 18 error codes (VaultError enum)
 └── instructions/
     ├── mod.rs           # Re-exports all instruction modules
     ├── initialize.rs    # Vault setup, accepts signers[3] + threshold
@@ -24,14 +25,19 @@ programs/turf-vault/src/
     ├── deposit.rs       # User → vault token transfer via CPI
     ├── withdraw.rs      # Vault → user token transfer via PDA signer
     ├── create_contest.rs
-    ├── enter_contest.rs # Debit PDA balance, build prize pool (managed wallets)
+    ├── enter_contest.rs # Debit PDA balance, collect entry fee (managed wallets)
     ├── enter_contest_direct.rs # User signs USDC transfer from wallet ATA (Phantom wallets)
+    ├── enter_contest_with_token.rs # Managed-wallet entry funded by an EntryTokenAccount
+    ├── enter_contest_direct_with_token.rs # Phantom-direct entry funded by an EntryTokenAccount
     ├── settle_contest.rs # remaining_accounts pattern, requires cosigner (2-of-3)
     ├── close_contest.rs
+    ├── migrate_user_account.rs # Resize legacy UserAccount PDAs
+    ├── mint_entry_token.rs # Admin mints a pre-purchased EntryTokenAccount
+    ├── create_season.rs # Create a Season with an immutable seed-award schedule
     ├── force_close_vault.rs # Migration-only: requires cosigner (2-of-3)
     └── update_signers.rs # Update multisig signers/threshold (2-of-3)
 tests/
-└── turf-vault.ts       # 25 test cases covering all instructions + multisig
+└── turf_vault.ts       # 44 test cases covering all instructions + multisig
 Anchor.toml             # Program ID, cluster config, test script
 ```
 
@@ -62,12 +68,16 @@ pub fn validate_multisig(&self, s1: &Pubkey, s2: &Pubkey) -> bool {
 | Instruction | Auth Level | Notes |
 |-------------|-----------|-------|
 | `create_contest` | 1-of-3 | Any signer can create |
+| `create_season` | 1-of-3 | Any signer can create |
 | `close_contest` | 1-of-3 | Any signer can close |
 | `enter_contest` / `enter_contest_direct` | 1-of-3 | Any signer can facilitate entries |
+| `enter_contest_with_token` | 1-of-3 + `wallet` | Payer (1-of-3) plus the token owner `wallet` signs (OPSEC-004) |
+| `enter_contest_direct_with_token` | User signs | User authorizes token consumption; admin pays PDA rent |
+| `mint_entry_token` | 1-of-3 | Any signer can mint a token for any wallet |
 | `migrate_user_account` | 1-of-3 | Any signer can migrate |
 | `settle_contest` | **2-of-3** | Requires `admin` + `cosigner` |
 | `force_close_vault` | **2-of-3** | Requires `admin` + `cosigner` |
-| `update_signers` | **2-of-3** | Requires `admin` + `cosigner` |
+| `update_signers` | **2-of-3** | Requires `admin` + `cosigner`; new set must keep ≥1 cosigner (OPSEC-027) |
 
 ### Co-signing Flow (Treasury Operations)
 1. Server (Alex Bot) builds TX and partially signs as `admin`
@@ -86,6 +96,8 @@ pub fn validate_multisig(&self, s1: &Pubkey, s2: &Pubkey) -> bool {
 | UserAccount | `[b"user", wallet]` | One per wallet |
 | Contest | `[b"contest", contest_id]` | contest_id = SHA256 of Rails slug |
 | ContestEntry | `[b"entry", contest_id, wallet, entry_num.to_le_bytes()]` | Multiple per user |
+| EntryTokenAccount | `[b"entry_token", owner, sequence.to_le_bytes()]` | sequence = u64 LE; discover via getProgramAccounts on `owner` |
+| Season | `[b"season", season_id.to_le_bytes()]` | season_id = u32 LE |
 
 ### CPI Token Transfers
 
@@ -113,7 +125,7 @@ All accounts use `#[derive(InitSpace)]`. Contest has `#[max_len(10)]` on `payout
 - `EntryStatus`: Active → Won / Lost
 
 ### UserAccount Fields
-- `wallet`, `balance`, `total_deposited`, `total_withdrawn`, `total_won`, `seeds` (u64, 65 per entry), `bump`
+- `wallet`, `balance`, `total_deposited`, `total_withdrawn`, `total_won`, `seeds` (u64, awarded per entry from the contest's `Season` seed schedule), `bump`
 
 ### Contest Fields
 - `contest_id`, `prizes`, `entry_fee`, `entry_fees`, `max_entries`, `current_entries`, `status`, `payout_amounts` (Vec, max 10), `admin` (payer pubkey), `creator` (prizes funder pubkey), `season_id` (u32, OPSEC-023 — season this contest is bound to), `bump`
@@ -128,21 +140,24 @@ All accounts use `#[derive(InitSpace)]`. Contest has `#[max_len(10)]` on `payout
 
 | Code | Name | When |
 |------|------|------|
-| 6000 | Unauthorized | Non-admin tries admin action |
+| 6000 | Unauthorized | Non-signer tries an admin action |
 | 6001 | InvalidMint | Deposit/withdraw with wrong mint |
 | 6002 | InsufficientBalance | Withdraw/enter exceeds balance |
 | 6003 | ContestNotOpen | Enter non-open contest |
 | 6004 | ContestFull | Contest at max_entries |
 | 6005 | ContestNotSettled | Close unsettled contest |
-| 6006 | ContestAlreadySettled | Settle already-settled contest |
-| 6007 | DuplicateEntry | Same entry_num (PDA collision) |
+| 6006 | ContestAlreadySettled | Settle already-settled contest, or settle a non-Active entry |
+| 6007 | DuplicateEntry | Same entry_num (PDA collision), or duplicate `(wallet, entry_num)` in a settlement |
 | 6008 | SettlementOverflow | Payouts > entry_fees + prizes |
 | 6009 | Overflow | Arithmetic overflow |
-| 6010 | InvalidPayoutTiers | Bad payout_amounts config |
-| 6011 | InvalidAccountData | Account data parsing failed |
-| 6012 | MigrationNotNeeded | Account already at current size |
+| 6010 | InvalidPayoutTiers | `payout_amounts` does not sum to `prizes` |
+| 6011 | AccountAlreadyMigrated | Account is already ≥ expected size — cannot migrate |
+| 6012 | InvalidAccountData | Account data parsing failed / wrong discriminator |
 | 6013 | InvalidThreshold | Threshold must be 1-3 |
 | 6014 | DuplicateSigner | Duplicate signer in array |
+| 6015 | EntryTokenAlreadyConsumed | Redeeming an already-consumed entry token |
+| 6016 | EntryTokenWrongOwner | Entry token owner ≠ the wallet entering |
+| 6017 | SignerContinuityRequired | `update_signers` drops all current cosigners |
 
 ## Testing
 
@@ -151,7 +166,7 @@ All accounts use `#[derive(InitSpace)]`. Contest has `#[max_len(10)]` on `payout
 anchor test
 ```
 
-25 tests covering: initialize (with 3 signers + threshold), create_user_account, deposit (USDC/USDT + invalid mint), create_contest (admin with bonus USDC transfer + non-admin rejection), enter_contest (2 users + insufficient balance), settle_contest (payouts with cosigner + already-settled + non-admin + same-signer-twice + non-signer-cosigner), withdraw (success + insufficient balance), close_contest (settled + unsettled), any signer can create contest, update_signers (valid + invalid threshold). Tests use SOL transfers from admin instead of `requestAirdrop` (broken in Solana v3.1).
+44 tests covering: initialize (with 3 signers + threshold), create_user_account, deposit (USDC/USDT + invalid mint), create_contest (admin with prizes USDC transfer + non-admin rejection + overflowing payout_amounts), enter_contest (2 users + insufficient balance), settle_contest (payouts with cosigner + already-settled + non-admin + same-signer-twice + non-signer-cosigner + duplicate (wallet, entry_num)), withdraw (success + insufficient balance), close_contest (settled + unsettled), any signer can create contest, update_signers (valid + invalid threshold + dropping all cosigners), mint_entry_token, the entry-token entry variants, and create_season + the seed-schedule award tests. Tests use SOL transfers from admin instead of `requestAirdrop` (broken in Solana v3.1).
 
 ### Test Setup Pattern
 ```typescript
@@ -253,7 +268,7 @@ Follow this sequence when SOL is needed. Move to the next step only if the curre
 
 ### Migration (Re-initialization)
 
-When the VaultState schema changes (e.g. adding `admin_backup`), the old account must be closed first:
+When the VaultState schema changes (e.g. adding a field to `signers` handling), the old account must be closed first:
 
 ```bash
 # From Rails app:
@@ -263,21 +278,24 @@ bin/rails solana:init_vault INIT=true SIGNERS=addr1,addr2,addr3 THRESHOLD=2
 
 ### Current Deployment (Devnet)
 
-- **Program ID**: `7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J`
-- **Vault PDA**: `7z313HTVNcxhvCBkkDQv794RpXeRrfCLb5WJ4dFAQQeh`
+- **Program ID**: `Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT`
+- **Upgrade authority**: Squads V4 vault PDA `BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC` (2-of-3 multisig — OPSEC-002)
+- **VaultState PDA**: `FYBTB5pwoSxN4CF5M45gW3e8hwMNFit6phbgyd4vpWAn`
 - **Signer 1**: Alex Bot — `F6f8h5yynbnkgWvU5abQx3RJxJpe8EoQmeFBuNKdKzhZ`
 - **Signer 2**: Alex — `7ZDJp7FUHhuceAqcW9CHe81hCiaMTjgWAXfprBM59Tcr`
 - **Signer 3**: Mason — `CytJS23p1zCM2wvUUngiDePtbMB484ebD7bK4nDqWjrR`
 - **Threshold**: 2-of-3 for treasury ops
 - **USDC Mint**: `222Dcu2RgAXE3T8A4mGSG3kQyXaNjqePx7vva1RdWBN9` (test, 6 decimals)
 - **USDT Mint**: `9mxkN8KaVA8FFgDE2LEsn2UbYLPG8Xg9bf4V9MYYi8Ne` (test, 6 decimals)
-- **IDL Account**: `DCP2XRu8ZwzsCpXBgu5xa4vTYdYQhKUZRU49iJuFv8Lf`
+- **IDL Account**: `66fFnyBykZRKrbU3dGzkd8udoadgMtH2u9XCj9nA5x75`
 
-**Status**: v0.8.0 deployed on devnet. 2-of-3 multisig for treasury ops. Vault re-initialized with 3 signers (Alex Bot, Alex, Mason), threshold 2.
+**Status**: v0.13.0 deployed on devnet. 2-of-3 multisig for treasury ops; program upgrade authority is a Squads V4 2-of-3 multisig. Vault initialized with 3 signers (Alex Bot, Alex, Mason), threshold 2.
+
+> **Note**: the program was migrated off the orphaned ID `7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J` on 2026-05-18 (its upgrade authority was lost). ~3.45 SOL of rent stays locked at the old program forever (devnet only).
 
 ## Versioning Protocol
 
-- **Semantic versioning** in `programs/turf-vault/Cargo.toml`
+- **Semantic versioning** in `programs/turf_vault/Cargo.toml`
   - MAJOR: Breaking account layout changes
   - MINOR: New instructions or features
   - PATCH: Bug fixes, validation improvements
@@ -313,7 +331,7 @@ The Rails app calls TurfVault through a `Solana::Vault` service layer:
 - **No lock instruction**: Contest can go directly from Open to Settled (Locked status exists but no instruction sets it yet)
 - **2-of-3 Multisig** (v0.8.0): Treasury ops require 2 distinct signers (`admin` + `cosigner`). Routine ops require any 1-of-3. Server partially signs, human cosigns via Phantom.
 - **Dual mint**: USDC + USDT supported from day one, separate vault token accounts
-- **Seeds system** (v0.5.0, updated v0.7.0): Both `enter_contest` and `enter_contest_direct` award 65 seeds to the user's `UserAccount` PDA. Seeds are on-chain only — Rails reads them via `sync_balance` and derives levels in the UI (`level = seeds / 100 + 1`).
+- **Seeds system** (v0.5.0, per-season schedule since v0.11.0): All four entry instructions (`enter_contest`, `enter_contest_direct`, `enter_contest_with_token`, `enter_contest_direct_with_token`) award seeds to the user's `UserAccount` PDA from the contest's bound `Season` — `season.seed_schedule[entry_num.min(4)]` (entries 5+ clamp to slot 4). Seeds are on-chain only — Rails reads them via `sync_balance` and derives levels in the UI (`level = seeds / 100 + 1`).
 - **Manual settlement**: No on-chain scoring — Rails computes results, admin submits final rankings
 - **force_close_vault**: Migration instruction that reads signers from raw bytes (avoids deserialization of old schema). Requires 2-of-3 cosign.
 - **update_signers** (v0.8.0): Rotate signers or change threshold. Requires 2-of-3 cosign.

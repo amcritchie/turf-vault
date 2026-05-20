@@ -2,7 +2,7 @@
 
 Solana escrow program for contest entry fees and prize distribution. Built with [Anchor](https://www.anchor-lang.com/).
 
-**Program ID**: `7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J`
+**Program ID**: `Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT`
 
 ![Anchor 0.32.1](https://img.shields.io/badge/Anchor-0.32.1-blue)
 ![Solana](https://img.shields.io/badge/Solana-Devnet-purple)
@@ -20,17 +20,23 @@ Users deposit USDC/USDT into the vault, enter contests by paying entry fees from
 
 ```
 VaultState (PDA: "vault")
-├── admin (Pubkey)
+├── signers ([Pubkey; 3]) / threshold (u8)
 ├── usdc_mint / usdt_mint
 ├── vault_usdc / vault_usdt (token accounts)
 │
 ├── UserAccount (PDA: "user" + wallet)
-│   ├── balance, total_deposited, total_withdrawn, total_won
+│   ├── balance, total_deposited, total_withdrawn, total_won, seeds
 │   └── wallet (Pubkey)
 │
+├── Season (PDA: "season" + season_id)
+│   └── name, seed_schedule ([u64; 5]), start_at
+│
+├── EntryTokenAccount (PDA: "entry_token" + owner + sequence)
+│   └── source, source_ref, consumed, consumed_at
+│
 └── Contest (PDA: "contest" + contest_id)
-    ├── entry_fee, max_entries, prize_pool, bonus
-    ├── payout_bps (Vec<u16>, max 10 ranks)
+    ├── entry_fee, max_entries, entry_fees, prizes, season_id
+    ├── payout_amounts (Vec<u64>, max 10 ranks)
     ├── status: Open → Locked → Settled
     │
     └── ContestEntry (PDA: "entry" + contest_id + wallet + entry_num)
@@ -47,19 +53,29 @@ VaultState (PDA: "vault")
 | UserAccount | `["user", wallet]` |
 | Contest | `["contest", contest_id]` |
 | ContestEntry | `["entry", contest_id, wallet, entry_num (LE bytes)]` |
+| Season | `["season", season_id (u32 LE bytes)]` |
+| EntryTokenAccount | `["entry_token", owner, sequence (u64 LE bytes)]` |
 
 ## Instructions
 
 | Instruction | Params | Auth | Description |
 |-------------|--------|------|-------------|
-| `initialize` | — | Admin (signer) | Create vault, set mints, init token accounts |
+| `initialize` | `signers: [Pubkey; 3], threshold: u8` | Signer (payer) | Create vault, set mints + signers, init token accounts |
 | `create_user_account` | `wallet` | Any signer (payer) | Create per-user balance account |
 | `deposit` | `amount` | User (signer) | Transfer tokens to vault, credit balance |
 | `withdraw` | `amount` | User (signer) | Debit balance, transfer tokens from vault |
-| `create_contest` | `contest_id, entry_fee, max_entries, payout_bps, bonus` | Admin | Create contest with payout tiers |
-| `enter_contest` | `entry_num` | Payer (signer) | Debit entry fee, add to prize pool |
-| `settle_contest` | `settlements: Vec<Settlement>` | Admin | Assign ranks/payouts, credit winners |
-| `close_contest` | — | Admin | Close settled contest, reclaim rent |
+| `create_season` | `season_id, name, seed_schedule, start_at` | 1-of-3 | Create a season with an immutable seed-award schedule |
+| `create_contest` | `contest_id, season_id, entry_fee, max_entries, payout_amounts, prizes` | 1-of-3 | Create contest with payout tiers, bound to a season |
+| `enter_contest` | `entry_num` | 1-of-3 | Debit entry fee from balance (managed wallets) |
+| `enter_contest_direct` | `entry_num` | 1-of-3 | User signs USDC transfer from their ATA (Phantom wallets) |
+| `mint_entry_token` | `sequence, source, source_ref` | 1-of-3 | Mint a pre-purchased entry token for a wallet |
+| `enter_contest_with_token` | `entry_num` | 1-of-3 + `wallet` | Managed-wallet entry funded by an entry token |
+| `enter_contest_direct_with_token` | `entry_num` | User (signer) | Phantom-direct entry funded by an entry token |
+| `settle_contest` | `settlements: Vec<Settlement>` | 2-of-3 | Assign ranks/payouts, credit winners |
+| `close_contest` | — | 1-of-3 | Close settled contest, reclaim rent |
+| `migrate_user_account` | — | 1-of-3 | Resize a legacy UserAccount PDA to the current layout |
+| `update_signers` | `new_signers: [Pubkey; 3], new_threshold: u8` | 2-of-3 | Rotate multisig signers / change threshold |
+| `force_close_vault` | — | 2-of-3 | Migration-only: close the vault, bypassing deserialization |
 
 ### Settlement Struct
 
@@ -79,7 +95,8 @@ Settlement accounts are passed as `remaining_accounts` — pairs of `[user_accou
 ### VaultState
 | Field | Type | Description |
 |-------|------|-------------|
-| `admin` | Pubkey | Vault administrator |
+| `signers` | [Pubkey; 3] | The three multisig signers |
+| `threshold` | u8 | Required sigs for treasury ops (2) |
 | `usdc_mint` | Pubkey | Accepted USDC mint |
 | `usdt_mint` | Pubkey | Accepted USDT mint |
 | `vault_usdc` | Pubkey | Vault USDC token account |
@@ -94,20 +111,23 @@ Settlement accounts are passed as `remaining_accounts` — pairs of `[user_accou
 | `total_deposited` | u64 | Lifetime deposits |
 | `total_withdrawn` | u64 | Lifetime withdrawals |
 | `total_won` | u64 | Total winnings received |
+| `seeds` | u64 | Seeds awarded per entry (from the contest's Season schedule) |
 | `bump` | u8 | PDA bump seed |
 
 ### Contest
 | Field | Type | Description |
 |-------|------|-------------|
 | `contest_id` | [u8; 32] | SHA256 of Rails slug |
+| `prizes` | u64 | Guaranteed prize amount the admin pre-funds (6 decimals) |
 | `entry_fee` | u64 | Fee per entry (6 decimals) |
+| `entry_fees` | u64 | Accumulated entry fees collected |
 | `max_entries` | u32 | Maximum entries allowed |
 | `current_entries` | u32 | Current entry count |
-| `prize_pool` | u64 | Sum of entry fees |
-| `bonus` | u64 | Admin-funded bonus |
 | `status` | ContestStatus | Open / Locked / Settled |
-| `payout_bps` | Vec\<u16\> | Basis points per rank (max 10, sum ≤ 10000) |
-| `admin` | Pubkey | Contest creator |
+| `payout_amounts` | Vec\<u64\> | USDC amount per rank (max 10, must sum to `prizes`) |
+| `admin` | Pubkey | Payer pubkey (created the contest) |
+| `creator` | Pubkey | Wallet that funded the `prizes` USDC |
+| `season_id` | u32 | Season this contest is bound to (OPSEC-023) |
 | `bump` | u8 | PDA bump seed |
 
 ### ContestEntry
@@ -128,14 +148,14 @@ Create → Enter → Settle → Close
   │        │        │        │
   │        │        │        └─ Reclaim rent (admin)
   │        │        └─ Assign ranks, credit winners (admin)
-  │        └─ Debit entry fee, build prize pool (user)
-  └─ Set fee, max entries, payout tiers (admin)
+  │        └─ Debit entry fee, accumulate entry fees (user)
+  └─ Set fee, max entries, payout tiers, pre-fund prizes (admin)
 ```
 
-1. **Create**: Admin creates contest with entry fee, max entries, payout basis points, and optional bonus
-2. **Enter**: Users pay entry fee from their vault balance. Prize pool accumulates on-chain
-3. **Settle**: Admin submits settlement array with rank + payout per entry. Winners credited, losers marked. Total payouts validated against pool + bonus
-4. **Close**: Admin closes the settled contest account, reclaiming rent to admin wallet
+1. **Create**: Admin creates a contest with entry fee, max entries, payout amounts, the bound season, and a pre-funded `prizes` pool
+2. **Enter**: Users pay the entry fee from their vault balance (or redeem an entry token). Entry fees accumulate on-chain
+3. **Settle**: Admin submits a settlement array with rank + payout per entry. Winners credited, losers marked. Total payouts validated against `entry_fees + prizes`
+4. **Close**: Admin closes the settled contest account, reclaiming rent to the admin wallet
 
 ## Token Support
 
@@ -146,7 +166,7 @@ Create → Enter → Settle → Close
 
 ## Development
 
-See [CLAUDE.md](./CLAUDE.md) for detailed development context including the dual admin system, PDA patterns, error codes, integration with Turf Monster, and AI agent instructions.
+See [CLAUDE.md](./CLAUDE.md) for detailed development context including the 2-of-3 multisig system, PDA patterns, error codes, integration with Turf Monster, and AI agent instructions.
 
 ### Prerequisites
 
@@ -167,17 +187,15 @@ anchor build
 anchor test
 ```
 
-Tests run against a local validator and cover all 8 instructions with 19 test cases including error scenarios.
+Tests run against a local validator and cover all 16 instructions with 44 test cases including error scenarios.
 
 ### Deploy
 
-```bash
-# Devnet
-solana config set --url devnet
-anchor deploy --provider.cluster devnet
+The program upgrade authority is a Squads V4 2-of-3 multisig (OPSEC-002, 2026-05-19), so **`anchor deploy` no longer works**. Upgrades go through the Squad via `scripts/squad-upgrade.js` — see the "Deploying an upgrade" section in [CLAUDE.md](./CLAUDE.md) for the full procedure.
 
-# Verify
-solana program show 7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J
+```bash
+# Verify the deployed program
+solana program show Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT --url devnet
 ```
 
 ## Versioning
@@ -192,11 +210,12 @@ Each deploy is tagged (e.g. `v0.1.0`) and documented in the changelog. See `Carg
 
 ## Security
 
-- **Admin auth**: All contest management (create, settle, close) requires vault admin signature
+- **2-of-3 multisig**: Treasury ops (settle, force_close, update_signers) require two distinct signers; routine ops require any 1-of-3
+- **Squads upgrade authority**: Program upgrades require a Squads V4 2-of-3 cosign (OPSEC-002) — no single-key code deployment
 - **PDA verification**: Settlement uses manual PDA derivation to verify all remaining accounts
 - **Checked arithmetic**: All math uses `checked_add`/`checked_sub` with overflow errors
-- **Payout cap**: Settlement validates total payouts ≤ prize_pool + bonus
-- **Payout BPS cap**: Sum of payout basis points must be ≤ 10,000
+- **Payout cap**: Settlement validates total payouts ≤ `entry_fees + prizes`
+- **Payout tier check**: `payout_amounts` must sum exactly to the contest's `prizes`
 - **Mint validation**: Deposits/withdrawals only accept configured USDC/USDT mints
 
 ## Related
