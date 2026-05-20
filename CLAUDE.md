@@ -116,7 +116,7 @@ All accounts use `#[derive(InitSpace)]`. Contest has `#[max_len(10)]` on `payout
 - `wallet`, `balance`, `total_deposited`, `total_withdrawn`, `total_won`, `seeds` (u64, 65 per entry), `bump`
 
 ### Contest Fields
-- `contest_id`, `prizes`, `entry_fee`, `entry_fees`, `max_entries`, `current_entries`, `status`, `payout_amounts` (Vec, max 10), `admin` (payer pubkey), `creator` (prizes funder pubkey), `bump`
+- `contest_id`, `prizes`, `entry_fee`, `entry_fees`, `max_entries`, `current_entries`, `status`, `payout_amounts` (Vec, max 10), `admin` (payer pubkey), `creator` (prizes funder pubkey), `season_id` (u32, OPSEC-023 — season this contest is bound to), `bump`
 
 ### Key Constraints
 - All token amounts: `u64` with 6 decimals (1 USDC = 1_000_000)

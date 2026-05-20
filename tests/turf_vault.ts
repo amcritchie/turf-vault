@@ -310,6 +310,7 @@ describe("turf_vault", () => {
       await program.methods
         .createContest(
           Array.from(contestId) as any,
+          DEFAULT_SEASON_ID,
           new anchor.BN(entryFee),
           maxEntries,
           payoutAmounts,
@@ -355,6 +356,7 @@ describe("turf_vault", () => {
         await program.methods
           .createContest(
             Array.from(fakeContestId) as any,
+            DEFAULT_SEASON_ID,
             new anchor.BN(toTokenAmount(9)),
             5,
             [new anchor.BN(toTokenAmount(40))],
@@ -394,6 +396,7 @@ describe("turf_vault", () => {
         await program.methods
           .createContest(
             Array.from(overflowContestId) as any,
+            DEFAULT_SEASON_ID,
             new anchor.BN(toTokenAmount(9)),
             5,
             [U64_MAX, new anchor.BN(1)],
@@ -552,6 +555,7 @@ describe("turf_vault", () => {
       await program.methods
         .createContest(
           Array.from(cId) as any,
+          DEFAULT_SEASON_ID,
           new anchor.BN(toTokenAmount(9)),
           5,
           [],
@@ -649,6 +653,7 @@ describe("turf_vault", () => {
       await program.methods
         .createContest(
           Array.from(cId) as any,
+          DEFAULT_SEASON_ID,
           new anchor.BN(toTokenAmount(9)),
           3,
           [],
@@ -750,6 +755,7 @@ describe("turf_vault", () => {
       await program.methods
         .createContest(
           Array.from(cId) as any,
+          DEFAULT_SEASON_ID,
           new anchor.BN(toTokenAmount(9)),
           10,
           [],
@@ -794,6 +800,125 @@ describe("turf_vault", () => {
       const after = await program.account.userAccount.fetch(userPda);
       // entry_num=7 clamps to slot 4 → schedule[4]=7
       expect(after.seeds.toNumber() - before.seeds.toNumber()).to.equal(7);
+    });
+
+    it("rejects enter_contest with a season account that isn't the contest's season (OPSEC-023)", async () => {
+      // The contest is bound to DEFAULT_SEASON_ID. Passing a different
+      // season's PDA as the `season` account must fail the seeds constraint.
+
+      // Ensure a second, distinct season exists (season_id=2).
+      const OTHER_SEASON_ID = 2;
+      const otherSeasonPda = deriveSeasonPda(OTHER_SEASON_ID);
+      const otherSeasonName = makeSeasonName("Decoy Season 2");
+      const otherSchedule = DEFAULT_SEED_SCHEDULE.map((n) => new anchor.BN(n));
+      const otherStartAt = new anchor.BN(Math.floor(Date.now() / 1000));
+
+      await program.methods
+        .createSeason(OTHER_SEASON_ID, otherSeasonName, otherSchedule as any, otherStartAt)
+        .accountsStrict({
+          admin: admin.publicKey,
+          vaultState: vaultStatePda,
+          season: otherSeasonPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      // Set up a user with a funded balance so the entry fee can be debited.
+      const wrongSeasonUser = Keypair.generate();
+      const fundTx = new anchor.web3.Transaction().add(
+        anchor.web3.SystemProgram.transfer({
+          fromPubkey: admin.publicKey,
+          toPubkey: wrongSeasonUser.publicKey,
+          lamports: LAMPORTS_PER_SOL,
+        })
+      );
+      await provider.sendAndConfirm(fundTx);
+
+      const [userPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("user"), wrongSeasonUser.publicKey.toBuffer()],
+        program.programId
+      );
+
+      await program.methods
+        .createUserAccount(wrongSeasonUser.publicKey)
+        .accountsStrict({
+          payer: admin.publicKey,
+          userAccount: userPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const userUsdc = await createAccount(connection, admin.payer, usdcMint, wrongSeasonUser.publicKey);
+      await mintTo(connection, admin.payer, usdcMint, userUsdc, admin.publicKey, toTokenAmount(50));
+      await program.methods
+        .deposit(new anchor.BN(toTokenAmount(20)))
+        .accountsStrict({
+          user: wrongSeasonUser.publicKey,
+          userAccount: userPda,
+          vaultState: vaultStatePda,
+          mint: usdcMint,
+          userTokenAccount: userUsdc,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([wrongSeasonUser])
+        .rpc();
+
+      // Fresh contest bound to DEFAULT_SEASON_ID.
+      const cId = createHash("sha256").update("opsec-023-wrong-season").digest();
+      const [cPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("contest"), cId],
+        program.programId
+      );
+      await program.methods
+        .createContest(
+          Array.from(cId) as any,
+          DEFAULT_SEASON_ID,
+          new anchor.BN(toTokenAmount(9)),
+          5,
+          [],
+          new anchor.BN(0)
+        )
+        .accountsStrict({
+          payer: admin.publicKey,
+          creator: admin.publicKey,
+          vaultState: vaultStatePda,
+          contest: cPda,
+          mint: usdcMint,
+          creatorTokenAccount: adminUsdcAccount,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const entryNumBytes = Buffer.alloc(4);
+      entryNumBytes.writeUInt32LE(0);
+      const [ePda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("entry"), cId, wrongSeasonUser.publicKey.toBuffer(), entryNumBytes],
+        program.programId
+      );
+
+      // Attempt the entry while passing the SECOND season's PDA instead of
+      // the contest's real season — must be rejected by the seeds constraint.
+      try {
+        await program.methods
+          .enterContest(0)
+          .accountsStrict({
+            payer: admin.publicKey,
+            wallet: wrongSeasonUser.publicKey,
+            vaultState: vaultStatePda,
+            userAccount: userPda,
+            contest: cPda,
+            contestEntry: ePda,
+            season: otherSeasonPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("ConstraintSeeds");
+      }
     });
   });
 
@@ -1052,6 +1177,7 @@ describe("turf_vault", () => {
       await program.methods
         .createContest(
           Array.from(dupeContestId) as any,
+          DEFAULT_SEASON_ID,
           new anchor.BN(toTokenAmount(9)),
           5,
           [],
@@ -1097,6 +1223,7 @@ describe("turf_vault", () => {
       await program.methods
         .createContest(
           Array.from(nonSignerContestId) as any,
+          DEFAULT_SEASON_ID,
           new anchor.BN(toTokenAmount(9)),
           5,
           [],
@@ -1167,6 +1294,7 @@ describe("turf_vault", () => {
       await program.methods
         .createContest(
           Array.from(dupeEntryContestId) as any,
+          DEFAULT_SEASON_ID,
           new anchor.BN(toTokenAmount(9)),
           5,
           [],
@@ -1313,6 +1441,7 @@ describe("turf_vault", () => {
       await program.methods
         .createContest(
           Array.from(freshContestId) as any,
+          DEFAULT_SEASON_ID,
           new anchor.BN(toTokenAmount(9)),
           5,
           [],
@@ -1387,6 +1516,7 @@ describe("turf_vault", () => {
       await program.methods
         .createContest(
           Array.from(signer2ContestId) as any,
+          DEFAULT_SEASON_ID,
           new anchor.BN(toTokenAmount(9)),
           5,
           [],
@@ -1700,6 +1830,7 @@ describe("turf_vault", () => {
       await program.methods
         .createContest(
           Array.from(tokenEntryContestId) as any,
+          DEFAULT_SEASON_ID,
           new anchor.BN(toTokenAmount(9)),
           5,
           [],
@@ -1786,6 +1917,7 @@ describe("turf_vault", () => {
       await program.methods
         .createContest(
           Array.from(reuseContestId) as any,
+          DEFAULT_SEASON_ID,
           new anchor.BN(toTokenAmount(9)),
           5,
           [],
@@ -1839,6 +1971,7 @@ describe("turf_vault", () => {
       await program.methods
         .createContest(
           Array.from(wrongOwnerContestId) as any,
+          DEFAULT_SEASON_ID,
           new anchor.BN(toTokenAmount(9)),
           5,
           [],
@@ -1893,6 +2026,7 @@ describe("turf_vault", () => {
       await program.methods
         .createContest(
           Array.from(backCompatContestId) as any,
+          DEFAULT_SEASON_ID,
           new anchor.BN(toTokenAmount(9)),
           5,
           [],
@@ -1976,6 +2110,7 @@ describe("turf_vault", () => {
       await program.methods
         .createContest(
           Array.from(directContestId) as any,
+          DEFAULT_SEASON_ID,
           new anchor.BN(toTokenAmount(9)),
           5,
           [],

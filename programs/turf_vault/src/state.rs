@@ -57,6 +57,7 @@ pub struct Contest {
     pub payout_amounts: Vec<u64>,  // USDC amounts per rank (6 decimals, e.g. [40_000000])
     pub admin: Pubkey,
     pub creator: Pubkey,       // wallet that funded the prizes USDC
+    pub season_id: u32,        // OPSEC-023: binds the contest to one Season
     pub bump: u8,
 }
 

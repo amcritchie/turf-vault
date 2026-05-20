@@ -2,6 +2,22 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.13.0] - 2026-05-19
+
+OPSEC-023 — binds every contest to a single season so the seed-award
+schedule can't be cherry-picked. Breaking Contest layout change; no
+migration (devnet/pre-prod clean break).
+
+### Security
+- **OPSEC-023 — `Season` was unconstrained across all four enter_contest variants.** `season: Account<'info, Season>` had no `seeds` constraint and `Contest` didn't record its season, so any caller could pass an arbitrary `Season` and claim the richest `seed_schedule` — inflating `UserAccount.seeds`, levels, and future tier rewards. `Contest` now stores `season_id: u32`, set at `create_contest`; `enter_contest`, `enter_contest_direct`, `enter_contest_with_token`, and `enter_contest_direct_with_token` pin `season` with `seeds = [b"season", contest.season_id.to_le_bytes()]`.
+
+### Breaking
+- **Contest account layout changed** — `season_id: u32` added. Contest accounts created by ≤0.12.0 are not migrated; recreate test contests after deploy.
+- `create_contest` takes a new `season_id` argument (second positional, after `contest_id`).
+
+### Internal
+- Audit reference: `mcritchie-studio/docs/agents/system/opsec-audit-pre-prod-2026-05-19.md` OPSEC-023.
+
 ## [0.12.0] - 2026-05-19
 
 First release deployed through the Squads multisig (see OPSEC-002 below).

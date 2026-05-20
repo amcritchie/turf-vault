@@ -48,6 +48,7 @@ pub struct CreateContest<'info> {
 pub fn handle_create_contest(
     ctx: Context<CreateContest>,
     contest_id: [u8; 32],
+    season_id: u32,
     entry_fee: u64,
     max_entries: u32,
     payout_amounts: Vec<u64>,
@@ -74,6 +75,7 @@ pub fn handle_create_contest(
     contest.payout_amounts = payout_amounts;
     contest.admin = ctx.accounts.payer.key();
     contest.creator = ctx.accounts.creator.key();
+    contest.season_id = season_id;
     contest.bump = ctx.bumps.contest;
 
     // Transfer prizes USDC from creator's ATA → vault

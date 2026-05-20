@@ -60,7 +60,10 @@ pub struct EnterContestDirect<'info> {
     #[account(
         constraint = mint.key() == vault_state.usdc_mint @ VaultError::InvalidMint,
     )]
-    pub mint: Account<'info, Mint>,
+    // Boxed: enter_contest_direct has the most accounts of any instruction;
+    // the season seeds constraint (OPSEC-023) tipped try_accounts over the
+    // 4KB SBF stack frame. Boxing the SPL accounts moves them to the heap.
+    pub mint: Box<Account<'info, Mint>>,
 
     /// User's USDC token account (ATA) — source of entry fee
     #[account(
@@ -68,18 +71,24 @@ pub struct EnterContestDirect<'info> {
         token::mint = mint,
         token::authority = user,
     )]
-    pub user_token_account: Account<'info, TokenAccount>,
+    pub user_token_account: Box<Account<'info, TokenAccount>>,
 
     /// Vault's USDC token account — destination for entry fee
     #[account(
         mut,
         constraint = vault_token_account.key() == vault_state.vault_usdc @ VaultError::InvalidMint,
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: Box<Account<'info, TokenAccount>>,
 
     pub token_program: Program<'info, Token>,
 
     /// Season whose seed_schedule controls per-entry seed awards.
+    /// OPSEC-023: seeds-pinned to the contest's bound season so a caller
+    /// can't substitute a richer-reward season.
+    #[account(
+        seeds = [b"season", contest.season_id.to_le_bytes().as_ref()],
+        bump = season.bump,
+    )]
     pub season: Account<'info, Season>,
 
     pub system_program: Program<'info, System>,

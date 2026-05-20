@@ -66,6 +66,12 @@ pub struct EnterContestWithToken<'info> {
     pub entry_token: Account<'info, EntryTokenAccount>,
 
     /// Season whose seed_schedule controls per-entry seed awards.
+    /// OPSEC-023: seeds-pinned to the contest's bound season so a caller
+    /// can't substitute a richer-reward season.
+    #[account(
+        seeds = [b"season", contest.season_id.to_le_bytes().as_ref()],
+        bump = season.bump,
+    )]
     pub season: Account<'info, Season>,
 
     pub system_program: Program<'info, System>,

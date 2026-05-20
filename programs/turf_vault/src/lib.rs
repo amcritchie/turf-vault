@@ -35,12 +35,13 @@ pub mod turf_vault {
     pub fn create_contest(
         ctx: Context<CreateContest>,
         contest_id: [u8; 32],
+        season_id: u32,
         entry_fee: u64,
         max_entries: u32,
         payout_amounts: Vec<u64>,
         prizes: u64,
     ) -> Result<()> {
-        handle_create_contest(ctx, contest_id, entry_fee, max_entries, payout_amounts, prizes)
+        handle_create_contest(ctx, contest_id, season_id, entry_fee, max_entries, payout_amounts, prizes)
     }
 
     pub fn enter_contest(ctx: Context<EnterContest>, entry_num: u32) -> Result<()> {
