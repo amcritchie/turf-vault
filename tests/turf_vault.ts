@@ -65,6 +65,10 @@ describe("turf_vault", () => {
     buf.write(s, 0, "utf8");
     return Array.from(buf);
   };
+  // username: [u8; 32] — same 32-byte zero-padded encoding as a season name.
+  const makeUsername = (s: string): number[] => makeSeasonName(s);
+  const decodeUsername = (bytes: any): string =>
+    Buffer.from(bytes).toString("utf8").replace(/\0+$/, "");
   let defaultSeasonPda: PublicKey;
 
   before(async () => {
@@ -145,7 +149,7 @@ describe("turf_vault", () => {
       );
 
       await program.methods
-        .createUserAccount(user1.publicKey)
+        .createUserAccount(user1.publicKey, makeUsername("user-one"))
         .accountsStrict({
           payer: admin.publicKey,
           userAccount: userAccountPda,
@@ -157,6 +161,7 @@ describe("turf_vault", () => {
       expect(account.wallet.toBase58()).to.equal(user1.publicKey.toBase58());
       expect(account.balance.toNumber()).to.equal(0);
       expect(account.seeds.toNumber()).to.equal(0);
+      expect(decodeUsername(account.username)).to.equal("user-one");
     });
 
     it("creates user account for user2", async () => {
@@ -166,7 +171,7 @@ describe("turf_vault", () => {
       );
 
       await program.methods
-        .createUserAccount(user2.publicKey)
+        .createUserAccount(user2.publicKey, makeUsername("user-two"))
         .accountsStrict({
           payer: admin.publicKey,
           userAccount: userAccountPda,
@@ -176,6 +181,49 @@ describe("turf_vault", () => {
 
       const account = await program.account.userAccount.fetch(userAccountPda);
       expect(account.wallet.toBase58()).to.equal(user2.publicKey.toBase58());
+      expect(decodeUsername(account.username)).to.equal("user-two");
+    });
+  });
+
+  describe("set_username", () => {
+    it("the account owner can set their username", async () => {
+      const [userAccountPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("user"), user1.publicKey.toBuffer()],
+        program.programId
+      );
+
+      await program.methods
+        .setUsername(makeUsername("renamed-user1"))
+        .accountsStrict({
+          wallet: user1.publicKey,
+          userAccount: userAccountPda,
+        })
+        .signers([user1])
+        .rpc();
+
+      const account = await program.account.userAccount.fetch(userAccountPda);
+      expect(decodeUsername(account.username)).to.equal("renamed-user1");
+    });
+
+    it("rejects a non-owner setting someone else's username", async () => {
+      const [user1AccountPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("user"), user1.publicKey.toBuffer()],
+        program.programId
+      );
+
+      try {
+        await program.methods
+          .setUsername(makeUsername("hacked"))
+          .accountsStrict({
+            wallet: user2.publicKey,
+            userAccount: user1AccountPda,
+          })
+          .signers([user2])
+          .rpc();
+        expect.fail("should have rejected a non-owner");
+      } catch (err: any) {
+        expect(err.toString()).to.match(/ConstraintSeeds|Unauthorized|seeds/i);
+      }
     });
   });
 
@@ -521,7 +569,7 @@ describe("turf_vault", () => {
 
       // Create user account
       await program.methods
-        .createUserAccount(seedTestUser.publicKey)
+        .createUserAccount(seedTestUser.publicKey, makeUsername("seed-tester"))
         .accountsStrict({
           payer: admin.publicKey,
           userAccount: userPda,
@@ -620,7 +668,7 @@ describe("turf_vault", () => {
       );
 
       await program.methods
-        .createUserAccount(cumUser.publicKey)
+        .createUserAccount(cumUser.publicKey, makeUsername("cumulative"))
         .accountsStrict({
           payer: admin.publicKey,
           userAccount: userPda,
@@ -723,7 +771,7 @@ describe("turf_vault", () => {
       );
 
       await program.methods
-        .createUserAccount(clampUser.publicKey)
+        .createUserAccount(clampUser.publicKey, makeUsername("clamp-tester"))
         .accountsStrict({
           payer: admin.publicKey,
           userAccount: userPda,
@@ -840,7 +888,7 @@ describe("turf_vault", () => {
       );
 
       await program.methods
-        .createUserAccount(wrongSeasonUser.publicKey)
+        .createUserAccount(wrongSeasonUser.publicKey, makeUsername("wrong-season"))
         .accountsStrict({
           payer: admin.publicKey,
           userAccount: userPda,
@@ -1050,7 +1098,7 @@ describe("turf_vault", () => {
 
       // Create user account with 0 balance
       await program.methods
-        .createUserAccount(brokeUser.publicKey)
+        .createUserAccount(brokeUser.publicKey, makeUsername("broke-user"))
         .accountsStrict({
           payer: admin.publicKey,
           userAccount: brokeUserPda,
