@@ -2,6 +2,21 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.14.0] - 2026-05-22
+
+On-chain usernames. `UserAccount` now stores the master copy of a user's
+username; the Rails app mirrors it. A new `set_username` instruction lets a
+user rename their own account. The `UserAccount` layout grew — existing
+accounts migrate via `migrate_user_account`.
+
+### Added
+- **`username: [u8; 32]` on `UserAccount`** — UTF-8, zero-padded; the on-chain master record for a user's display name.
+- **`set_username` instruction** — sets/updates the username on a `UserAccount`. Signed by the account's own `wallet` (single-signer, PDA-gated) — no admin, no multisig. Bytes are stored verbatim; format + uniqueness are enforced by the Rails app.
+
+### Breaking
+- **`UserAccount` layout changed** — `username: [u8; 32]` added (81 → 113 bytes). Existing accounts must be migrated with `migrate_user_account`, which now reallocs the pre-v0.14.0 (81-byte) layout, preserves `seeds`, and initializes `username` empty (the Rails app backfills via `set_username`).
+- **`create_user_account` takes a new `username: [u8; 32]` argument** (second positional, after `wallet`) — the username is set at account-creation time.
+
 ## [0.13.0] - 2026-05-19
 
 OPSEC-023 — binds every contest to a single season so the seed-award

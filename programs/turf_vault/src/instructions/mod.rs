@@ -14,6 +14,7 @@ pub mod mint_entry_token;
 pub mod enter_contest_with_token;
 pub mod enter_contest_direct_with_token;
 pub mod create_season;
+pub mod set_username;
 
 pub use initialize::*;
 pub use create_user_account::*;
@@ -31,3 +32,4 @@ pub use mint_entry_token::*;
 pub use enter_contest_with_token::*;
 pub use enter_contest_direct_with_token::*;
 pub use create_season::*;
+pub use set_username::*;

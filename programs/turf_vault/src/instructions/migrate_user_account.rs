@@ -50,12 +50,12 @@ pub fn handle_migrate_user_account(ctx: Context<MigrateUserAccount>) -> Result<(
     require!(current_len < expected_len, VaultError::AccountAlreadyMigrated);
 
     // Read old fields from raw bytes at known offsets.
-    // Old layout (v0.4.x, 73 bytes): [disc:8][wallet:32][balance:8][deposited:8][withdrawn:8][won:8][bump:1]
-    // New layout (v0.5.0, 81 bytes): [disc:8][wallet:32][balance:8][deposited:8][withdrawn:8][won:8][seeds:8][bump:1]
+    // Pre-v0.14.0 layout (81 bytes): [disc:8][wallet:32][balance:8][deposited:8][withdrawn:8][won:8][seeds:8][bump:1]
+    // v0.14.0 layout (113 bytes):    [..][seeds:8][username:32][bump:1]
     // The bump byte shifts position when fields are added before it, so we read field-by-field.
-    let (wallet, balance, total_deposited, total_withdrawn, total_won, bump) = {
+    let (wallet, balance, total_deposited, total_withdrawn, total_won, seeds, bump) = {
         let data = user_account.try_borrow_data()?;
-        require!(data.len() >= 8, VaultError::InvalidAccountData);
+        require!(data.len() >= 81, VaultError::InvalidAccountData);
 
         // Verify discriminator matches UserAccount
         let expected_disc = UserAccount::DISCRIMINATOR;
@@ -67,9 +67,10 @@ pub fn handle_migrate_user_account(ctx: Context<MigrateUserAccount>) -> Result<(
         let total_deposited = u64::from_le_bytes(data[48..56].try_into().unwrap());
         let total_withdrawn = u64::from_le_bytes(data[56..64].try_into().unwrap());
         let total_won = u64::from_le_bytes(data[64..72].try_into().unwrap());
-        let bump = data[72]; // In old layout, bump is right after total_won
+        let seeds = u64::from_le_bytes(data[72..80].try_into().unwrap());
+        let bump = data[80]; // In the pre-v0.14.0 layout, bump is right after seeds
 
-        (wallet, balance, total_deposited, total_withdrawn, total_won, bump)
+        (wallet, balance, total_deposited, total_withdrawn, total_won, seeds, bump)
     }; // data borrow dropped here
 
     // Realloc account to new size
@@ -93,14 +94,16 @@ pub fn handle_migrate_user_account(ctx: Context<MigrateUserAccount>) -> Result<(
         )?;
     }
 
-    // Write new struct with seeds=0 for the new field
+    // Write new struct with an empty username for the new field —
+    // the Rails app backfills the real value via set_username.
     let new_account = UserAccount {
         wallet,
         balance,
         total_deposited,
         total_withdrawn,
         total_won,
-        seeds: 0,
+        seeds,
+        username: [0u8; 32],
         bump,
     };
 

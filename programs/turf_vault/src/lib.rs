@@ -20,8 +20,12 @@ pub mod turf_vault {
         handle_force_close_vault(ctx)
     }
 
-    pub fn create_user_account(ctx: Context<CreateUserAccount>, wallet: Pubkey) -> Result<()> {
-        handle_create_user_account(ctx, wallet)
+    pub fn create_user_account(
+        ctx: Context<CreateUserAccount>,
+        wallet: Pubkey,
+        username: [u8; 32],
+    ) -> Result<()> {
+        handle_create_user_account(ctx, wallet, username)
     }
 
     pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
@@ -99,5 +103,9 @@ pub mod turf_vault {
         start_at: i64,
     ) -> Result<()> {
         handle_create_season(ctx, season_id, name, seed_schedule, start_at)
+    }
+
+    pub fn set_username(ctx: Context<SetUsername>, username: [u8; 32]) -> Result<()> {
+        handle_set_username(ctx, username)
     }
 }

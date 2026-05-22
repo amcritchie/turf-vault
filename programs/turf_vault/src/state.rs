@@ -33,6 +33,7 @@ pub struct UserAccount {
     pub total_withdrawn: u64,
     pub total_won: u64,
     pub seeds: u64,            // 60 seeds awarded per contest entry
+    pub username: [u8; 32],    // v0.14.0: UTF-8 username, zero-padded. Master record; Rails mirrors it.
     pub bump: u8,
 }
 
