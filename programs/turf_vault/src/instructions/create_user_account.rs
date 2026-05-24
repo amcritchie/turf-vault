@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 use crate::state::UserAccount;
+use crate::instructions::set_username::validate_username;
 
 /// `create_user_account` — first-touch onboarding for a wallet.
 ///
@@ -34,6 +35,13 @@ pub fn handle_create_user_account(
     wallet: Pubkey,
     username: [u8; 32],
 ) -> Result<()> {
+    // Prelaunch audit C2 (2026-05-24): on-chain username validity bar.
+    // create_user_account is permissionless on the payer side (MEDIUM-2 in
+    // the audit) — anyone can pre-create another wallet's account. Without
+    // this check, an attacker could front-run a signup and set username =
+    // "admin" or any reserved/brand handle. Same rules as set_username.
+    validate_username(&username)?;
+
     let user = &mut ctx.accounts.user_account;
     user.wallet = wallet;
     user.balance = 0;

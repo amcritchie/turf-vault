@@ -2,6 +2,56 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.15.1] - 2026-05-24
+
+Pre-mainnet audit closeout. Closes three findings from the 2026-05-24
+prelaunch security audit (Jasper). No state-layout changes; existing
+UserAccount / Contest / ContestEntry PDAs remain bit-identical.
+
+### Removed
+- **`migrate_user_account` instruction (C1).** The instruction was a one-time
+  v0.13 → v0.14 backfill helper for the username field; it was never used
+  in anger (devnet was reset, mainnet has no v0.13 accounts to migrate).
+  Per the audit, the implementation lacked a wallet Signer requirement and
+  didn't bind the PDA-seed `wallet` argument to the stored `user_account.wallet`
+  field — so any 1-of-3 admin (including the Heroku-resident bot key) could
+  rewrite any UserAccount with no consent. The instruction is removed
+  outright. Future schema bumps will ship a properly-constrained realloc
+  if needed.
+
+### Added
+- **`set_username` + `create_user_account` validation (C2).** Both paths now
+  call a shared `validate_username` helper:
+  - At least 3 non-null leading bytes (rejects short squats).
+  - Every non-null byte must be printable ASCII `0x20..=0x7E` (rejects
+    control chars, high-bit bytes, and the on-chain layer of homoglyph
+    attacks).
+  - Reserved-prefix list (case-insensitive): `admin`, `system`, `turf`,
+    `vault`, `turfmonster`, `support`, `mod`, `official`, `staff`, `team`,
+    `root`. Anything beginning with one of these is rejected.
+  - New error codes: `UsernameReserved` (6020), `UsernameInvalidChars` (6021),
+    `UsernameTooShort` (6022).
+  - Rails-side uniqueness / homoglyph normalization / rate-limiting is
+    unchanged. A `UsernameRegistry` PDA + per-account rate-limit is the
+    v0.16 follow-up.
+
+### Changed
+- **PDA-seed-bind Contest in entry + settle instructions (H1).** All five
+  Contest-touching instructions (`enter_contest`, `enter_contest_direct`,
+  `enter_contest_with_token`, `enter_contest_direct_with_token`,
+  `settle_contest`) now constrain the Contest account with
+  `seeds = [b"contest", contest.contest_id.as_ref()], bump = contest.bump`.
+  Anchor re-derives the PDA from the account's own stored contest_id+bump
+  and rejects mismatches. Defense-in-depth on top of off-chain TX-verifier
+  checks.
+
+### Deprecated (kept for code-stability)
+- `AccountAlreadyMigrated` (6011), `InvalidAccountData` (6012) error variants
+  remain in `errors.rs` to preserve numbering — `AccountAlreadyMigrated` is
+  still used by `force_close_vault`; `InvalidAccountData` becomes unused
+  with `migrate_user_account` deleted but stays so subsequent variants keep
+  their stable Rails-side error-code mapping.
+
 ## [0.15.0] - 2026-05-23
 
 Pre-mainnet hardening. Bakes in deploy-day attack mitigations, adds an

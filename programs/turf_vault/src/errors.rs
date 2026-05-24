@@ -47,4 +47,12 @@ pub enum VaultError {
     VaultPaused,
     #[msg("Withdrawal would exceed the $100 / 24h per-user cap")]
     WithdrawDailyCapExceeded,
+    // ─── v0.15.1 ──────────────────────────────────────────────────────────
+    // Prelaunch audit C2 — username validation on create_user_account + set_username.
+    #[msg("Username uses a reserved prefix")]
+    UsernameReserved,
+    #[msg("Username contains characters that are not printable ASCII (0x20..0x7E)")]
+    UsernameInvalidChars,
+    #[msg("Username must be at least 3 characters")]
+    UsernameTooShort,
 }

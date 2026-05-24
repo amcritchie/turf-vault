@@ -44,8 +44,12 @@ pub struct EnterContestWithToken<'info> {
     )]
     pub user_account: Account<'info, UserAccount>,
 
+    // H1 prelaunch audit (2026-05-24): PDA-seed-bind Contest. See
+    // enter_contest.rs for the attack scenario this closes.
     #[account(
         mut,
+        seeds = [b"contest", contest.contest_id.as_ref()],
+        bump = contest.bump,
         constraint = contest.status == ContestStatus::Open @ VaultError::ContestNotOpen,
         constraint = contest.current_entries < contest.max_entries @ VaultError::ContestFull,
     )]

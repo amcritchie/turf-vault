@@ -42,8 +42,14 @@ pub struct SettleContest<'info> {
     )]
     pub vault_state: Account<'info, VaultState>,
 
+    // H1 prelaunch audit (2026-05-24): PDA-seed-bind Contest. Defense
+    // in depth — a careless cosigner approving a Squad TX where the
+    // Contest account doesn't match its stored contest_id would now be
+    // rejected on-chain.
     #[account(
         mut,
+        seeds = [b"contest", contest.contest_id.as_ref()],
+        bump = contest.bump,
         constraint = contest.status == ContestStatus::Open || contest.status == ContestStatus::Locked @ VaultError::ContestAlreadySettled,
     )]
     pub contest: Account<'info, Contest>,

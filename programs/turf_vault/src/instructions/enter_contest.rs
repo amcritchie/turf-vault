@@ -38,8 +38,15 @@ pub struct EnterContest<'info> {
     )]
     pub user_account: Account<'info, UserAccount>,
 
+    // H1 prelaunch audit (2026-05-24): PDA-seed-bind Contest. Anchor
+    // re-derives the PDA from the account's own stored contest_id+bump
+    // and rejects any substituted Contest account. Defense in depth
+    // against a compromised client or middleman swapping the Contest
+    // account between user signature and on-chain execution.
     #[account(
         mut,
+        seeds = [b"contest", contest.contest_id.as_ref()],
+        bump = contest.bump,
         constraint = contest.status == ContestStatus::Open @ VaultError::ContestNotOpen,
         constraint = contest.current_entries < contest.max_entries @ VaultError::ContestFull,
     )]

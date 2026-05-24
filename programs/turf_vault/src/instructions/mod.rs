@@ -5,7 +5,7 @@
 // Instructions are grouped roughly by lifecycle:
 //   Vault setup & governance — initialize, force_close_vault, update_signers
 //   Pause control (v0.15.0) — pause, unpause
-//   User accounts           — create_user_account, migrate_user_account, set_username
+//   User accounts           — create_user_account, set_username
 //   Funds in/out            — deposit, withdraw
 //   Seasons                 — create_season
 //   Contest lifecycle       — create_contest, settle_contest, close_contest
@@ -22,7 +22,6 @@ pub mod enter_contest_direct;
 pub mod settle_contest;
 pub mod close_contest;
 pub mod force_close_vault;
-pub mod migrate_user_account;
 pub mod update_signers;
 pub mod mint_entry_token;
 pub mod enter_contest_with_token;
@@ -42,7 +41,6 @@ pub use enter_contest_direct::*;
 pub use settle_contest::*;
 pub use close_contest::*;
 pub use force_close_vault::*;
-pub use migrate_user_account::*;
 pub use update_signers::*;
 pub use mint_entry_token::*;
 pub use enter_contest_with_token::*;

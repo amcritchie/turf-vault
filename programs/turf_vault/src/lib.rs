@@ -12,7 +12,7 @@
 //!
 //! Auth model:
 //!   - **1-of-3 vault signer**: routine ops (create_contest, mint_entry_token,
-//!     facilitate entries, migrate_user_account).
+//!     facilitate entries).
 //!   - **2-of-3 vault signers**: treasury ops (settle_contest, force_close_vault,
 //!     update_signers, pause, unpause).
 //!   - **User signature**: deposit, withdraw, direct entries, set_username.
@@ -84,13 +84,6 @@ pub mod turf_vault {
         username: [u8; 32],
     ) -> Result<()> {
         handle_create_user_account(ctx, wallet, username)
-    }
-
-    /// Resize a UserAccount PDA to the current v0.15.0 layout. Handles
-    /// both v0.13 (81 bytes, pre-username) and v0.14 (113 bytes) source
-    /// layouts. Idempotent. Admin-only.
-    pub fn migrate_user_account(ctx: Context<MigrateUserAccount>) -> Result<()> {
-        handle_migrate_user_account(ctx)
     }
 
     /// Set / overwrite the username on a UserAccount. Signed by the

@@ -225,6 +225,81 @@ describe("turf_vault", () => {
         expect(err.toString()).to.match(/ConstraintSeeds|Unauthorized|seeds/i);
       }
     });
+
+    // v0.15.1 prelaunch audit C2: on-chain username validation.
+
+    it("rejects a reserved prefix (admin)", async () => {
+      const [userAccountPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("user"), user1.publicKey.toBuffer()],
+        program.programId
+      );
+      try {
+        await program.methods
+          .setUsername(makeUsername("admin-tom"))
+          .accountsStrict({ wallet: user1.publicKey, userAccount: userAccountPda })
+          .signers([user1])
+          .rpc();
+        expect.fail("should have rejected reserved prefix");
+      } catch (err: any) {
+        expect(err.toString()).to.match(/UsernameReserved/i);
+      }
+    });
+
+    it("rejects a reserved prefix case-insensitively (AdMiN)", async () => {
+      const [userAccountPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("user"), user1.publicKey.toBuffer()],
+        program.programId
+      );
+      try {
+        await program.methods
+          .setUsername(makeUsername("AdMiNTester"))
+          .accountsStrict({ wallet: user1.publicKey, userAccount: userAccountPda })
+          .signers([user1])
+          .rpc();
+        expect.fail("should have rejected reserved prefix (case-insensitive)");
+      } catch (err: any) {
+        expect(err.toString()).to.match(/UsernameReserved/i);
+      }
+    });
+
+    it("rejects a username shorter than 3 characters", async () => {
+      const [userAccountPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("user"), user1.publicKey.toBuffer()],
+        program.programId
+      );
+      try {
+        await program.methods
+          .setUsername(makeUsername("ab"))
+          .accountsStrict({ wallet: user1.publicKey, userAccount: userAccountPda })
+          .signers([user1])
+          .rpc();
+        expect.fail("should have rejected too-short username");
+      } catch (err: any) {
+        expect(err.toString()).to.match(/UsernameTooShort/i);
+      }
+    });
+
+    it("rejects a username containing non-printable bytes", async () => {
+      const [userAccountPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("user"), user1.publicKey.toBuffer()],
+        program.programId
+      );
+      // Hand-craft a 32-byte array with a control char (0x01) in the middle.
+      const bytes = new Array(32).fill(0);
+      bytes[0] = 0x68; // h
+      bytes[1] = 0x01; // ← invalid (control char)
+      bytes[2] = 0x69; // i
+      try {
+        await program.methods
+          .setUsername(bytes as any)
+          .accountsStrict({ wallet: user1.publicKey, userAccount: userAccountPda })
+          .signers([user1])
+          .rpc();
+        expect.fail("should have rejected non-printable bytes");
+      } catch (err: any) {
+        expect(err.toString()).to.match(/UsernameInvalidChars/i);
+      }
+    });
   });
 
   describe("deposit", () => {
@@ -1524,34 +1599,8 @@ describe("turf_vault", () => {
     });
   });
 
-  describe("migrate_user_account", () => {
-    it("no-ops on already current account (idempotent)", async () => {
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user1.publicKey.toBuffer()],
-        program.programId
-      );
-
-      // Account is already at current size — migrate should be a no-op
-      const beforeAccount = await program.account.userAccount.fetch(userAccountPda);
-
-      await program.methods
-        .migrateUserAccount()
-        .accountsStrict({
-          admin: admin.publicKey,
-          vaultState: vaultStatePda,
-          userAccount: userAccountPda,
-          wallet: user1.publicKey,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      // Verify nothing changed
-      const afterAccount = await program.account.userAccount.fetch(userAccountPda);
-      expect(afterAccount.balance.toNumber()).to.equal(beforeAccount.balance.toNumber());
-      expect(afterAccount.seeds.toNumber()).to.equal(beforeAccount.seeds.toNumber());
-      expect(afterAccount.wallet.toBase58()).to.equal(beforeAccount.wallet.toBase58());
-    });
-  });
+  // v0.15.1 (prelaunch audit C1): migrate_user_account instruction removed.
+  // Previously this describe block tested its idempotent no-op behavior.
 
   describe("multisig", () => {
     it("any signer can create a contest (single-signer routine op)", async () => {
