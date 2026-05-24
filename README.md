@@ -26,6 +26,7 @@ VaultState (PDA: "vault")
 │
 ├── UserAccount (PDA: "user" + wallet)
 │   ├── balance, total_deposited, total_withdrawn, total_won, seeds
+│   ├── username ([u8; 32]), daily_withdrawn, daily_window_start
 │   └── wallet (Pubkey)
 │
 ├── Season (PDA: "season" + season_id)
@@ -61,9 +62,12 @@ VaultState (PDA: "vault")
 | Instruction | Params | Auth | Description |
 |-------------|--------|------|-------------|
 | `initialize` | `signers: [Pubkey; 3], threshold: u8` | Signer (payer) | Create vault, set mints + signers, init token accounts |
-| `create_user_account` | `wallet` | Any signer (payer) | Create per-user balance account |
+| `pause` | `reason: [u8; 64]` | 2-of-3 | Set `VaultState.paused = true` — circuit breaker for user-facing ops |
+| `unpause` | — | 2-of-3 | Clear the pause flag |
+| `create_user_account` | `wallet, username: [u8; 32]` | Any signer (payer) | Create per-user balance account with on-chain username |
+| `set_username` | `username: [u8; 32]` | User (signer) | Update the username on an existing UserAccount |
 | `deposit` | `amount` | User (signer) | Transfer tokens to vault, credit balance |
-| `withdraw` | `amount` | User (signer) | Debit balance, transfer tokens from vault |
+| `withdraw` | `amount` | User (signer) | Debit balance, transfer tokens from vault. Enforces `DAILY_WITHDRAW_CAP` per rolling window |
 | `create_season` | `season_id, name, seed_schedule, start_at` | 1-of-3 | Create a season with an immutable seed-award schedule |
 | `create_contest` | `contest_id, season_id, entry_fee, max_entries, payout_amounts, prizes` | 1-of-3 | Create contest with payout tiers, bound to a season |
 | `enter_contest` | `entry_num` | 1-of-3 | Debit entry fee from balance (managed wallets) |
@@ -102,6 +106,7 @@ Settlement accounts are passed as `remaining_accounts` — pairs of `[user_accou
 | `vault_usdc` | Pubkey | Vault USDC token account |
 | `vault_usdt` | Pubkey | Vault USDT token account |
 | `bump` | u8 | PDA bump seed |
+| `paused` | bool | Circuit breaker — when true, user-facing ops are blocked. Set via `pause` / cleared via `unpause` (both 2-of-3) |
 
 ### UserAccount
 | Field | Type | Description |
@@ -112,6 +117,9 @@ Settlement accounts are passed as `remaining_accounts` — pairs of `[user_accou
 | `total_withdrawn` | u64 | Lifetime withdrawals |
 | `total_won` | u64 | Total winnings received |
 | `seeds` | u64 | Seeds awarded per entry (from the contest's Season schedule) |
+| `username` | [u8; 32] | UTF-8 username, right-padded with `0x00`. Set on create or via `set_username` (user-signed) |
+| `daily_withdrawn` | u64 | USDC withdrawn within the current daily window (6 decimals) |
+| `daily_window_start` | i64 | Unix timestamp at which the current daily-withdraw window began. Window length = `DAILY_WINDOW_SECONDS` (86,400) |
 | `bump` | u8 | PDA bump seed |
 
 ### Contest
@@ -187,7 +195,7 @@ anchor build
 anchor test
 ```
 
-Tests run against a local validator and cover all 16 instructions with 44 test cases including error scenarios.
+Tests run against a local validator and cover the program's 19 instructions with broad coverage of happy paths + error scenarios (multisig, payouts, mint validation, entry tokens, signer rotation, season seed schedules).
 
 ### Deploy
 
