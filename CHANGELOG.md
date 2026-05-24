@@ -2,6 +2,94 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.15.0] - 2026-05-23
+
+Pre-mainnet hardening. Bakes in deploy-day attack mitigations, adds an
+emergency pause switch, caps per-user withdraw velocity, and ships an
+adversarial-audit pass of plain-English instruction documentation.
+
+### Added
+- **Emergency pause** (M5). New `pause(reason: [u8; 64])` and `unpause()`
+  instructions at 2-of-3 multisig. When paused, `deposit`, `withdraw`, and
+  all four `enter_contest*` variants reject with `VaultPaused` (6018).
+  Admin/maintenance ops remain available (settle, close, mint_entry_token,
+  migrate, set_username, create_user_account, create_season, update_signers,
+  force_close_vault, pause, unpause).
+- **Daily withdraw cap**. New `daily_withdrawn: u64` + `daily_window_start: i64`
+  on `UserAccount`. `withdraw` enforces a rolling 24h cap per user of
+  `DAILY_WITHDRAW_CAP` (100_000_000 lamports = $100). Window auto-resets when
+  24h has elapsed since the previous start. Rejected withdraws return
+  `WithdrawDailyCapExceeded` (6019). Friction for legit large withdrawals,
+  hard cap on damage if a managed-wallet key is leaked.
+- **`paused: bool`** on `VaultState` (defaulted to false at initialize).
+- **`INIT_AUTHORITY` constant** in `state.rs` — hardcodes the only wallet
+  permitted to call `initialize`. Set to `7ZDJp7FUHhuceAqcW9CHe81hCiaMTjgWAXfprBM59Tcr`
+  (Alex's Phantom key; never on the server).
+- **`EXPECTED_USDC_MINT` / `EXPECTED_USDT_MINT` constants**, feature-gated.
+  Default = devnet test mints; `--features mainnet` = canonical Circle USDC
+  (`EPjFW…`) + Tether USDT (`Es9vM…`). `initialize` rejects mints that don't
+  match the build's constants.
+- New error codes: `VaultPaused` (6018), `WithdrawDailyCapExceeded` (6019).
+- **Mainnet Cargo feature** in `programs/turf_vault/Cargo.toml`. Mainnet
+  binary must be built with `anchor build -- --features mainnet`.
+
+### Security (pre-launch audit)
+- **H1 — `initialize` frontrun mitigation.** Previously anyone who won the
+  race between program deploy and the legit init TX could become vault owner
+  with attacker-controlled signers and mints. Now `initialize` rejects unless
+  admin == INIT_AUTHORITY AND mints == EXPECTED_USDC/USDT_MINT for the build.
+  Reduces "frontrun the deploy" attack surface to zero; the only way to
+  initialize is with Alex's Phantom signature + the canonical mints.
+- **M5 — Emergency stop**. Audit-flagged absence of a pause/circuit breaker.
+  Now an operator (2-of-3) can halt user-facing funds operations within
+  one transaction's finality time when a bug or attack is detected, without
+  needing a full Squads program upgrade.
+- **New — withdraw daily cap**. Caps an attacker-with-stolen-keypair to
+  $100/day per user instead of the full balance instantly. Even if Lazarus
+  exfiltrates the MANAGED_WALLET_ENCRYPTION_KEY + DB, the on-chain rate limit
+  bounds per-account damage to $100/day.
+
+### Breaking
+- **`VaultState` layout changed** — added `paused: bool` (1 byte). Existing
+  vaults must be migrated via `force_close_vault` → `initialize`. On devnet:
+  `bin/rails solana:init_vault FORCE_CLOSE=true && bin/rails solana:init_vault INIT=true SIGNERS=... THRESHOLD=2`.
+- **`UserAccount` layout changed** — added `daily_withdrawn: u64` + `daily_window_start: i64`
+  (16 bytes). Existing accounts must be migrated via `migrate_user_account`.
+  `migrate_user_account` now handles both v0.13 (81 bytes, no username) and
+  v0.14 (113 bytes) source layouts, extending to v0.15 (129 bytes) with
+  the new daily fields initialized to zero. Migration is idempotent.
+- **`initialize` now requires Alex's Phantom key**, not the Rails server's
+  Alex Bot key. The `bin/rails solana:init_vault` task needs to be updated
+  to either build a partially-signed init for Alex to cosign via Phantom,
+  or be replaced with a one-shot CLI script that loads Alex's key. **For
+  the mainnet first-deploy: Alex signs initialize from Phantom (or a local
+  CLI with his key); this is a once-per-deployment event.**
+
+### Documentation
+- Plain-English module docstrings added to every instruction file. Each
+  file now leads with a "what this does" summary before the technical
+  details — readable by a non-Rust developer doing a code tour.
+- `state.rs` field-by-field comments explaining purpose, lifecycle, and
+  audit notes inline.
+- `lib.rs` now carries the program's high-level model (account roles,
+  auth tiers, instruction grouping) as a module-level doc comment.
+
+### Migration procedure (devnet)
+1. Build: `anchor build`
+2. Deploy via Squads: `node scripts/squad-upgrade.js <buffer_addr>`
+3. Force-close old vault: `bin/rails solana:init_vault FORCE_CLOSE=true`
+4. Re-initialize (Alex Phantom signs):
+   `bin/rails solana:init_vault INIT=true SIGNERS=F6f8h5yyn...,7ZDJp7FUHh...,CytJS23p1z... THRESHOLD=2`
+5. For each existing UserAccount: `migrate_user_account` (idempotent — safe to run twice)
+6. Re-pin IDL hash in turf-monster (OPSEC-014): `cp target/idl/turf_vault.json /Users/alex/projects/turf-monster/config/turf_vault.idl.json && shasum -a 256 /Users/alex/projects/turf-monster/config/turf_vault.idl.json` → set `EXPECTED_IDL_HASH`
+
+### Mainnet first-deploy procedure
+1. Build with mainnet mints: `anchor build -- --features mainnet`
+2. Deploy program via Squads to a fresh mainnet program ID.
+3. Alex builds + signs `initialize` from Phantom or a local CLI loaded with
+   Alex's keypair. (Alex Bot CANNOT initialize — INIT_AUTHORITY rejects.)
+4. Verify with `solana program show <program_id> --url mainnet-beta`.
+
 ## [0.14.0] - 2026-05-22
 
 On-chain usernames. `UserAccount` now stores the master copy of a user's

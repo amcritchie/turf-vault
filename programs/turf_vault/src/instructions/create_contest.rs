@@ -3,6 +3,25 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 use crate::state::{VaultState, Contest, ContestStatus};
 use crate::errors::VaultError;
 
+/// `create_contest` — set up a new contest with an upfront prize pool.
+///
+/// Dual-signer pattern:
+///   - `payer` (any 1-of-3 vault signer): pays SOL rent for the Contest PDA
+///   - `creator` (any wallet with USDC): signs the SPL transfer of the
+///     `prizes` amount from their ATA → vault USDC PDA
+///
+/// For operator-funded contests, admin acts as BOTH payer and creator (Solana
+/// dedupes signers by pubkey so a single signature covers both slots — see
+/// `Solana::Vault#create_contest_server_funded`).
+///
+/// Validation:
+///   - `payout_amounts.sum() == prizes` (no slop)
+///   - sum uses checked_add (OPSEC-025 — `iter().sum::<u64>()` wraps silently)
+///   - vault_token_account must be the canonical vault_usdc PDA
+///   - mint must be USDC
+///
+/// `season_id` binds the contest to one Season for seed-schedule pinning
+/// (OPSEC-023).
 #[derive(Accounts)]
 #[instruction(contest_id: [u8; 32])]
 pub struct CreateContest<'info> {

@@ -3,6 +3,16 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 use crate::state::{VaultState, UserAccount};
 use crate::errors::VaultError;
 
+/// `deposit` — user sends USDC or USDT into the vault.
+///
+/// The user signs an SPL token Transfer from their own ATA to the vault's
+/// token PDA. UserAccount.balance is credited by the same amount. lifetime
+/// total_deposited accumulates.
+///
+/// Auth: the user owns the keypair signing this. For managed (web2) wallets
+/// the Rails server holds the keypair and signs on behalf of the user.
+///
+/// Paused: rejected with VaultPaused while the vault is paused (v0.15.0).
 #[derive(Accounts)]
 pub struct Deposit<'info> {
     #[account(mut)]
@@ -45,7 +55,10 @@ pub struct Deposit<'info> {
 }
 
 pub fn handle_deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
-    // Transfer tokens from user to vault
+    // v0.15.0: emergency pause guard.
+    require!(!ctx.accounts.vault_state.paused, VaultError::VaultPaused);
+
+    // Transfer tokens from user → vault via CPI.
     let cpi_accounts = Transfer {
         from: ctx.accounts.user_token_account.to_account_info(),
         to: ctx.accounts.vault_token_account.to_account_info(),
@@ -54,10 +67,13 @@ pub fn handle_deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
     let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
     token::transfer(cpi_ctx, amount)?;
 
-    // Credit user balance
+    // Credit balance + accumulate lifetime stat.
     let user = &mut ctx.accounts.user_account;
     user.balance = user.balance.checked_add(amount).ok_or(VaultError::Overflow)?;
-    user.total_deposited = user.total_deposited.checked_add(amount).ok_or(VaultError::Overflow)?;
+    user.total_deposited = user
+        .total_deposited
+        .checked_add(amount)
+        .ok_or(VaultError::Overflow)?;
 
     msg!("Deposited {} to user {}", amount, user.wallet);
     Ok(())

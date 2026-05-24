@@ -2,13 +2,16 @@ use anchor_lang::prelude::*;
 use crate::state::UserAccount;
 use crate::errors::VaultError;
 
-/// Sets the username on a UserAccount. The username's master record lives
-/// on-chain (v0.14.0); the Rails app mirrors it. The account owner signs —
-/// no admin or multisig involvement. Idempotent: overwrites any prior value.
+/// `set_username` — wallet owner sets / overwrites their display username.
 ///
-/// The signing `wallet` must own the `user_account` PDA. Username bytes are
-/// stored verbatim (UTF-8, zero-padded); format + uniqueness are enforced by
-/// the Rails app before this is called.
+/// The on-chain UserAccount holds the master copy of the username (v0.14.0);
+/// Rails mirrors it. The account owner signs the change — no admin,
+/// no multisig, no rate limit. Idempotent.
+///
+/// Bytes are stored verbatim as a 32-byte zero-padded UTF-8 array. Format
+/// and uniqueness are NOT enforced on-chain — Rails handles that before
+/// calling. Multiple wallets could in principle share a username on-chain;
+/// off-chain consumers should treat (wallet, username) as the identity.
 #[derive(Accounts)]
 pub struct SetUsername<'info> {
     pub wallet: Signer<'info>,

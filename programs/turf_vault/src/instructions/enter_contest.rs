@@ -2,6 +2,18 @@ use anchor_lang::prelude::*;
 use crate::state::{VaultState, UserAccount, Contest, ContestEntry, ContestStatus, EntryStatus, Season};
 use crate::errors::VaultError;
 
+/// `enter_contest` — managed-wallet entry (web2 users).
+///
+/// Debits the entry fee from UserAccount.balance, creates a ContestEntry
+/// PDA, and credits seeds to the user from the bound Season's schedule.
+/// No SPL token transfer at the moment of entry — the user already
+/// deposited their USDC into the vault.
+///
+/// Auth: 1-of-3 vault signer signs as `payer` (Rails server using Alex
+/// Bot's key). The `wallet` is just a key lookup, not a signer — this
+/// is the custodial path.
+///
+/// Paused: rejected with VaultPaused while the vault is paused.
 #[derive(Accounts)]
 #[instruction(entry_num: u32)]
 pub struct EnterContest<'info> {
@@ -60,6 +72,9 @@ pub struct EnterContest<'info> {
 }
 
 pub fn handle_enter_contest(ctx: Context<EnterContest>, entry_num: u32) -> Result<()> {
+    // v0.15.0: emergency pause guard.
+    require!(!ctx.accounts.vault_state.paused, VaultError::VaultPaused);
+
     let user = &mut ctx.accounts.user_account;
     let contest = &mut ctx.accounts.contest;
     let season = &ctx.accounts.season;

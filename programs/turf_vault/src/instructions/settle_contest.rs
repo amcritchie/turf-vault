@@ -2,6 +2,24 @@ use anchor_lang::prelude::*;
 use crate::state::{VaultState, UserAccount, Contest, ContestEntry, ContestStatus, EntryStatus};
 use crate::errors::VaultError;
 
+/// `settle_contest` — grade a contest and credit payouts.
+///
+/// Takes a `Vec<Settlement>` (one per entry, including losers with payout=0)
+/// and a pair of remaining_accounts per Settlement: [user_account, contest_entry].
+/// Verifies each pair against the expected PDA seeds, then:
+///   - Adds `payout` to UserAccount.balance + total_won
+///   - Sets ContestEntry rank + payout, transitions Active → Won/Lost
+///
+/// Cap: total payouts ≤ contest.entry_fees + contest.prizes. Anchor's
+/// remaining_accounts pattern lets us settle a variable number of entries
+/// in one TX (up to compute-budget limits — ~25-30 entries per call on mainnet).
+///
+/// Auth: 2-of-3 (admin + cosigner). Settle is the only path that credits
+/// balances to users, so it requires the highest authorization.
+///
+/// Refusals:
+///   - Duplicate (wallet, entry_num) in the Vec — would double-credit a user
+///   - A ContestEntry already settled (status != Active) — defense in depth
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct Settlement {
     pub wallet: Pubkey,

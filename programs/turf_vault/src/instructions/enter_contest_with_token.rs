@@ -2,11 +2,20 @@ use anchor_lang::prelude::*;
 use crate::state::{VaultState, UserAccount, Contest, ContestEntry, ContestStatus, EntryStatus, EntryTokenAccount, Season};
 use crate::errors::VaultError;
 
-/// Managed entry funded by an EntryTokenAccount (no USDC fee charged).
-/// Same as `enter_contest` but consumes a pre-purchased entry token in the
-/// same atomic transaction. User balance is NOT debited; seeds are still awarded.
+/// `enter_contest_with_token` — managed entry funded by a pre-purchased
+/// EntryTokenAccount instead of USDC.
 ///
-/// Auth: any 1-of-3 vault signer (same routine-op pattern as enter_contest).
+/// Same as `enter_contest` but atomically consumes one of the user's
+/// EntryTokenAccount PDAs (sets consumed=true). No USDC charge,
+/// `contest.entry_fees` is NOT incremented (operator subsidizes the prize
+/// pool for token-funded entries). Seeds still awarded.
+///
+/// Auth: 1-of-3 vault signer (payer) AND the wallet itself co-signs. The
+/// wallet co-sign (OPSEC-004) closes the "compromised admin key burns a
+/// user's token without consent" attack — Rails server holds the managed
+/// wallet's keypair and co-signs.
+///
+/// Paused: rejected with VaultPaused while the vault is paused.
 #[derive(Accounts)]
 #[instruction(entry_num: u32)]
 pub struct EnterContestWithToken<'info> {
@@ -81,6 +90,9 @@ pub fn handle_enter_contest_with_token(
     ctx: Context<EnterContestWithToken>,
     entry_num: u32,
 ) -> Result<()> {
+    // v0.15.0: emergency pause guard.
+    require!(!ctx.accounts.vault_state.paused, VaultError::VaultPaused);
+
     let user = &mut ctx.accounts.user_account;
     let contest = &mut ctx.accounts.contest;
     let entry_token = &mut ctx.accounts.entry_token;

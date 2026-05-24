@@ -2,17 +2,26 @@ use anchor_lang::prelude::*;
 use crate::state::{VaultState, EntryTokenAccount};
 use crate::errors::VaultError;
 
-/// Admin mints an EntryTokenAccount for a user. The token represents one
-/// pre-purchased contest entry that the user can later redeem (consume) to
-/// enter a contest without paying the entry fee at entry time.
+/// `mint_entry_token` — admin mints a pre-purchased contest-entry voucher
+/// for a user.
 ///
-/// PDA seeds: [b"entry_token", user_wallet, sequence_le_bytes]
-/// `sequence` is supplied by the caller so admin can mint multiple tokens per
-/// user without PDA collisions. Discovery is via getProgramAccounts filtered
-/// by `owner`.
+/// The recipient (user) later consumes one of these via
+/// enter_contest_with_token / enter_contest_direct_with_token to enter a
+/// contest without paying the USDC entry fee at entry time. Typical
+/// triggers: a Stripe purchase (TokenPurchaseJob), an operator gift
+/// (admin UI), a level-up reward.
 ///
-/// Auth: any 1-of-3 vault signer (same routine-op pattern as create_contest,
-/// enter_contest, migrate_user_account). The user_wallet is NOT a signer.
+/// PDA seeds: [b"entry_token", user_wallet, sequence_le_bytes]. `sequence`
+/// is supplied by the caller (Rails picks `current_count` for the user)
+/// so multiple tokens can coexist for the same wallet without PDA
+/// collisions. Discover with `getProgramAccounts` filtered by `owner`.
+///
+/// Auth: 1-of-3 vault signer (routine op). The user_wallet is NOT a
+/// signer — tokens can be minted for any wallet. (Consent at redemption
+/// time is enforced separately by the consume instructions.)
+///
+/// NOT gated by vault pause — operators must be able to fulfill Stripe
+/// purchases that completed before the pause.
 #[derive(Accounts)]
 #[instruction(sequence: u64)]
 pub struct MintEntryToken<'info> {

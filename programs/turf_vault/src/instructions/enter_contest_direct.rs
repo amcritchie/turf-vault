@@ -3,9 +3,17 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 use crate::state::{VaultState, UserAccount, Contest, ContestEntry, ContestStatus, EntryStatus, Season};
 use crate::errors::VaultError;
 
-/// Direct entry: user transfers USDC from their own wallet ATA to the vault.
-/// No UserAccount PDA balance deduction — funds come straight from the user's token account.
-/// Admin is payer (covers PDA rent) so the user only spends USDC, not SOL.
+/// `enter_contest_direct` — Phantom-wallet entry (web3 users).
+///
+/// Unlike `enter_contest`, the user signs an SPL token transfer from their
+/// own ATA to the vault USDC PDA directly — no UserAccount.balance debit.
+/// The admin (1-of-3 vault signer) is the payer, covering SOL rent for the
+/// new ContestEntry PDA so the user only spends USDC, not SOL.
+///
+/// Auth: user signs (controls the source ATA). Admin signs (pays rent +
+/// satisfies OPSEC-024 routine-op gate). Both required.
+///
+/// Paused: rejected with VaultPaused while the vault is paused.
 #[derive(Accounts)]
 #[instruction(entry_num: u32)]
 pub struct EnterContestDirect<'info> {
@@ -95,6 +103,9 @@ pub struct EnterContestDirect<'info> {
 }
 
 pub fn handle_enter_contest_direct(ctx: Context<EnterContestDirect>, entry_num: u32) -> Result<()> {
+    // v0.15.0: emergency pause guard.
+    require!(!ctx.accounts.vault_state.paused, VaultError::VaultPaused);
+
     let contest = &mut ctx.accounts.contest;
 
     // Transfer entry fee from user's ATA to vault's ATA

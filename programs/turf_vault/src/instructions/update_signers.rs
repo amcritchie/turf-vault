@@ -2,6 +2,17 @@ use anchor_lang::prelude::*;
 use crate::state::VaultState;
 use crate::errors::VaultError;
 
+/// `update_signers` — rotate the multisig signer set or change threshold.
+///
+/// Use cases: a signer's key was lost / compromised; you want to move a
+/// signer to a hardware wallet; you want to add a third trust domain.
+///
+/// Auth: 2-of-3 of the CURRENT signers.
+///
+/// OPSEC-027 continuity: at least one of the two cosigners authorizing
+/// this update must remain in the new signer set. Without this guard, two
+/// compromised signers could rotate to three attacker-controlled
+/// addresses, locking out the legitimate third party with no recovery path.
 #[derive(Accounts)]
 pub struct UpdateSigners<'info> {
     #[account(mut)]

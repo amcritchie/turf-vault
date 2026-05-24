@@ -2,15 +2,27 @@ use anchor_lang::prelude::*;
 use crate::state::VaultState;
 use crate::errors::VaultError;
 
-/// Migration-only instruction: closes the old VaultState account so it can be
-/// re-initialized with the new schema.
+/// `force_close_vault` — close the VaultState account so a new schema
+/// version can be re-initialized at the same PDA.
 ///
-/// We cannot use `Account<'info, VaultState>` because the on-chain data has the
-/// OLD layout. Instead we accept a raw UncheckedAccount, verify the PDA seeds,
-/// read the first signer pubkey from raw bytes, confirm the signer matches,
-/// and then close the account by draining its lamports.
+/// Migration-only. When a new program version changes the VaultState
+/// layout (e.g. v0.15.0 added `paused: bool`), the existing on-chain
+/// data has the OLD layout and Anchor refuses to deserialize it. This
+/// instruction reads the signer pubkeys directly from raw bytes (avoiding
+/// deserialization), authorizes 2-of-3 the manual way, and drains all
+/// lamports to admin — which closes the account at the runtime level.
 ///
-/// Requires 2-of-3 multisig: both admin and cosigner must be stored signers.
+/// OPSEC-026 safety: refuses to run on a vault that's ALREADY at the
+/// current schema size. Without this, two compromised signers could
+/// replay force_close indefinitely on a healthy vault.
+///
+/// Note: this DOES NOT close the vault_usdc / vault_usdt token PDAs.
+/// They retain the same PDA address (constant seeds) and same authority
+/// (the vault_state PDA, also at a constant address) — so after re-init,
+/// the new VaultState transparently owns the existing token accounts and
+/// any USDC/USDT held in them.
+///
+/// Auth: 2-of-3 of the current stored signers.
 #[derive(Accounts)]
 pub struct ForceCloseVault<'info> {
     #[account(mut)]

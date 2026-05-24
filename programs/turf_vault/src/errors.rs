@@ -1,5 +1,9 @@
 use anchor_lang::prelude::*;
 
+/// Every error this program can return. Codes 6000+ are Anchor's
+/// reserved range for program-defined errors; the numbering here is
+/// stable across versions (don't renumber — Rails error-decoding maps
+/// integer codes to messages).
 #[error_code]
 pub enum VaultError {
     #[msg("Only the vault admin can perform this action")]
@@ -38,4 +42,9 @@ pub enum VaultError {
     EntryTokenWrongOwner,
     #[msg("New signer set must retain at least one current cosigner")]
     SignerContinuityRequired,
+    // ─── v0.15.0 ──────────────────────────────────────────────────────────
+    #[msg("Vault is paused — user-facing funds operations are temporarily disabled")]
+    VaultPaused,
+    #[msg("Withdrawal would exceed the $100 / 24h per-user cap")]
+    WithdrawDailyCapExceeded,
 }

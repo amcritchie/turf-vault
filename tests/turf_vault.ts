@@ -2224,4 +2224,571 @@ describe("turf_vault", () => {
       expect(entry.wallet.toBase58()).to.equal(user2.publicKey.toBase58());
     });
   });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // v0.15.0 emergency pause / unpause
+  // ──────────────────────────────────────────────────────────────────────
+  describe("pause / unpause (v0.15.0)", () => {
+    let pauseContestId: Buffer;
+    let pauseContestPda: PublicKey;
+    let user1Pda: PublicKey;
+    let user2Pda: PublicKey;
+
+    const derivePauseUserPda = (wallet: PublicKey): PublicKey =>
+      PublicKey.findProgramAddressSync(
+        [Buffer.from("user"), wallet.toBuffer()],
+        program.programId
+      )[0];
+
+    const derivePauseEntryPda = (cId: Buffer, wallet: PublicKey, entryNum: number): PublicKey => {
+      const buf = Buffer.alloc(4);
+      buf.writeUInt32LE(entryNum);
+      return PublicKey.findProgramAddressSync(
+        [Buffer.from("entry"), cId, wallet.toBuffer(), buf],
+        program.programId
+      )[0];
+    };
+
+    const derivePauseEntryTokenPda = (wallet: PublicKey, sequence: number | bigint): PublicKey => {
+      const seqBuf = Buffer.alloc(8);
+      seqBuf.writeBigUInt64LE(BigInt(sequence));
+      return PublicKey.findProgramAddressSync(
+        [Buffer.from("entry_token"), wallet.toBuffer(), seqBuf],
+        program.programId
+      )[0];
+    };
+
+    const buildReason = (s: string): number[] => {
+      const buf = Buffer.alloc(64);
+      buf.write(s, 0, "utf8");
+      return Array.from(buf);
+    };
+
+    const pauseVault = async () => {
+      await program.methods
+        .pause(buildReason("test pause") as any)
+        .accountsStrict({
+          admin: admin.publicKey,
+          cosigner: signer2.publicKey,
+          vaultState: vaultStatePda,
+        })
+        .signers([signer2])
+        .rpc();
+    };
+
+    const unpauseVault = async () => {
+      await program.methods
+        .unpause()
+        .accountsStrict({
+          admin: admin.publicKey,
+          cosigner: signer2.publicKey,
+          vaultState: vaultStatePda,
+        })
+        .signers([signer2])
+        .rpc();
+    };
+
+    before(async () => {
+      user1Pda = derivePauseUserPda(user1.publicKey);
+      user2Pda = derivePauseUserPda(user2.publicKey);
+
+      // Fresh open contest with prizes=0 entry_fee=$1 so we can attempt
+      // entries with both managed and direct paths during pause tests.
+      pauseContestId = createHash("sha256").update("pause-test-contest").digest();
+      [pauseContestPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("contest"), pauseContestId],
+        program.programId
+      );
+
+      await program.methods
+        .createContest(
+          Array.from(pauseContestId) as any,
+          DEFAULT_SEASON_ID,
+          new anchor.BN(toTokenAmount(1)),
+          10,
+          [],
+          new anchor.BN(0)
+        )
+        .accountsStrict({
+          payer: admin.publicKey,
+          creator: admin.publicKey,
+          vaultState: vaultStatePda,
+          contest: pauseContestPda,
+          mint: usdcMint,
+          creatorTokenAccount: adminUsdcAccount,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+    });
+
+    // Belt-and-suspenders: leave the vault unpaused regardless of how each
+    // test ended. Subsequent describe blocks would otherwise hit VaultPaused.
+    afterEach(async () => {
+      const vault = await program.account.vaultState.fetch(vaultStatePda);
+      if (vault.paused) await unpauseVault();
+    });
+
+    it("pause sets paused=true with valid 2-of-3 cosign", async () => {
+      await pauseVault();
+      const vault = await program.account.vaultState.fetch(vaultStatePda);
+      expect(vault.paused).to.equal(true);
+    });
+
+    it("unpause sets paused=false with valid 2-of-3 cosign", async () => {
+      await pauseVault();
+      await unpauseVault();
+      const vault = await program.account.vaultState.fetch(vaultStatePda);
+      expect(vault.paused).to.equal(false);
+    });
+
+    it("rejects pause with the same signer twice", async () => {
+      try {
+        await program.methods
+          .pause(buildReason("nope") as any)
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: admin.publicKey,
+            vaultState: vaultStatePda,
+          })
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("Unauthorized");
+      }
+    });
+
+    it("rejects pause with a non-signer cosigner", async () => {
+      const stranger = Keypair.generate();
+      await provider.sendAndConfirm(
+        new anchor.web3.Transaction().add(
+          anchor.web3.SystemProgram.transfer({
+            fromPubkey: admin.publicKey,
+            toPubkey: stranger.publicKey,
+            lamports: LAMPORTS_PER_SOL,
+          })
+        )
+      );
+      try {
+        await program.methods
+          .pause(buildReason("nope") as any)
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: stranger.publicKey,
+            vaultState: vaultStatePda,
+          })
+          .signers([stranger])
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("Unauthorized");
+      }
+    });
+
+    it("rejects unpause with the same signer twice", async () => {
+      await pauseVault();
+      try {
+        await program.methods
+          .unpause()
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: admin.publicKey,
+            vaultState: vaultStatePda,
+          })
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("Unauthorized");
+      }
+    });
+
+    it("paused vault rejects deposit (VaultPaused)", async () => {
+      await pauseVault();
+      try {
+        await program.methods
+          .deposit(new anchor.BN(toTokenAmount(1)))
+          .accountsStrict({
+            user: user1.publicKey,
+            userAccount: user1Pda,
+            vaultState: vaultStatePda,
+            mint: usdcMint,
+            userTokenAccount: user1UsdcAccount,
+            vaultTokenAccount: vaultUsdcPda,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([user1])
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("VaultPaused");
+      }
+    });
+
+    it("paused vault rejects withdraw (VaultPaused)", async () => {
+      await pauseVault();
+      try {
+        await program.methods
+          .withdraw(new anchor.BN(toTokenAmount(1)))
+          .accountsStrict({
+            user: user1.publicKey,
+            userAccount: user1Pda,
+            vaultState: vaultStatePda,
+            mint: usdcMint,
+            userTokenAccount: user1UsdcAccount,
+            vaultTokenAccount: vaultUsdcPda,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([user1])
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("VaultPaused");
+      }
+    });
+
+    it("paused vault rejects enter_contest (managed)", async () => {
+      await pauseVault();
+      const entryPda = derivePauseEntryPda(pauseContestId, user1.publicKey, 100);
+      try {
+        await program.methods
+          .enterContest(100)
+          .accountsStrict({
+            payer: admin.publicKey,
+            wallet: user1.publicKey,
+            vaultState: vaultStatePda,
+            userAccount: user1Pda,
+            contest: pauseContestPda,
+            contestEntry: entryPda,
+            season: defaultSeasonPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("VaultPaused");
+      }
+    });
+
+    it("paused vault rejects enter_contest_direct (Phantom)", async () => {
+      await pauseVault();
+      const entryPda = derivePauseEntryPda(pauseContestId, user2.publicKey, 100);
+      try {
+        await program.methods
+          .enterContestDirect(100)
+          .accountsStrict({
+            payer: admin.publicKey,
+            user: user2.publicKey,
+            userAccount: user2Pda,
+            vaultState: vaultStatePda,
+            contest: pauseContestPda,
+            contestEntry: entryPda,
+            mint: usdcMint,
+            userTokenAccount: user2UsdcAccount,
+            vaultTokenAccount: vaultUsdcPda,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            season: defaultSeasonPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([user2])
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("VaultPaused");
+      }
+    });
+
+    it("paused vault rejects enter_contest_with_token (managed token)", async () => {
+      // Mint a token to user1 BEFORE pausing so we have an unconsumed one
+      // to attempt to consume while paused. mint_entry_token is NOT gated.
+      const sequence = 7000;
+      const tokenPda = derivePauseEntryTokenPda(user1.publicKey, sequence);
+      const sourceRef = Buffer.alloc(64);
+      sourceRef.write("pause-test-managed-token");
+      await program.methods
+        .mintEntryToken(new anchor.BN(sequence), 0, Array.from(sourceRef) as any)
+        .accountsStrict({
+          admin: admin.publicKey,
+          vaultState: vaultStatePda,
+          userWallet: user1.publicKey,
+          entryToken: tokenPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      await pauseVault();
+      const entryPda = derivePauseEntryPda(pauseContestId, user1.publicKey, 101);
+      try {
+        await program.methods
+          .enterContestWithToken(101)
+          .accountsStrict({
+            payer: admin.publicKey,
+            wallet: user1.publicKey,
+            vaultState: vaultStatePda,
+            userAccount: user1Pda,
+            contest: pauseContestPda,
+            contestEntry: entryPda,
+            entryToken: tokenPda,
+            season: defaultSeasonPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([user1])
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("VaultPaused");
+      }
+    });
+
+    it("paused vault rejects enter_contest_direct_with_token (Phantom token)", async () => {
+      // Mint a token to user2 BEFORE pausing.
+      const sequence = 7001;
+      const tokenPda = derivePauseEntryTokenPda(user2.publicKey, sequence);
+      const sourceRef = Buffer.alloc(64);
+      sourceRef.write("pause-test-direct-token");
+      await program.methods
+        .mintEntryToken(new anchor.BN(sequence), 0, Array.from(sourceRef) as any)
+        .accountsStrict({
+          admin: admin.publicKey,
+          vaultState: vaultStatePda,
+          userWallet: user2.publicKey,
+          entryToken: tokenPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      await pauseVault();
+      const entryPda = derivePauseEntryPda(pauseContestId, user2.publicKey, 101);
+      try {
+        await program.methods
+          .enterContestDirectWithToken(101)
+          .accountsStrict({
+            payer: admin.publicKey,
+            user: user2.publicKey,
+            userAccount: user2Pda,
+            vaultState: vaultStatePda,
+            contest: pauseContestPda,
+            contestEntry: entryPda,
+            entryToken: tokenPda,
+            season: defaultSeasonPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([user2])
+          .rpc();
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("VaultPaused");
+      }
+    });
+
+    it("paused vault still allows mint_entry_token (admin op)", async () => {
+      await pauseVault();
+      const sequence = 7002;
+      const tokenPda = derivePauseEntryTokenPda(user1.publicKey, sequence);
+      const sourceRef = Buffer.alloc(64);
+      sourceRef.write("paused-mint-allowed");
+
+      await program.methods
+        .mintEntryToken(new anchor.BN(sequence), 0, Array.from(sourceRef) as any)
+        .accountsStrict({
+          admin: admin.publicKey,
+          vaultState: vaultStatePda,
+          userWallet: user1.publicKey,
+          entryToken: tokenPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const token = await program.account.entryTokenAccount.fetch(tokenPda);
+      expect(token.owner.toBase58()).to.equal(user1.publicKey.toBase58());
+      expect(token.consumed).to.equal(false);
+    });
+
+    it("unpause re-enables deposit", async () => {
+      await pauseVault();
+      await unpauseVault();
+
+      // Fresh deposit should succeed again — proves unpause actually
+      // lifts the gate, not just flips the flag.
+      const before = await program.account.userAccount.fetch(user1Pda);
+      await program.methods
+        .deposit(new anchor.BN(toTokenAmount(1)))
+        .accountsStrict({
+          user: user1.publicKey,
+          userAccount: user1Pda,
+          vaultState: vaultStatePda,
+          mint: usdcMint,
+          userTokenAccount: user1UsdcAccount,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([user1])
+        .rpc();
+      const after = await program.account.userAccount.fetch(user1Pda);
+      expect(after.balance.toNumber()).to.equal(
+        before.balance.toNumber() + toTokenAmount(1)
+      );
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // v0.15.0 withdraw daily cap ($100 / 24h per user)
+  // ──────────────────────────────────────────────────────────────────────
+  describe("withdraw daily cap (v0.15.0)", () => {
+    // Fresh user with $300 in the vault so we can exercise the $100 cap
+    // without colliding with user1/user2's existing balances + state.
+    let capUser: Keypair;
+    let capUserUsdc: PublicKey;
+    let capUserPda: PublicKey;
+
+    const setupFundedUser = async (
+      name: string,
+      depositDollars: number
+    ): Promise<{ user: Keypair; ata: PublicKey; pda: PublicKey }> => {
+      const u = Keypair.generate();
+      await provider.sendAndConfirm(
+        new anchor.web3.Transaction().add(
+          anchor.web3.SystemProgram.transfer({
+            fromPubkey: admin.publicKey,
+            toPubkey: u.publicKey,
+            lamports: 5 * LAMPORTS_PER_SOL,
+          })
+        )
+      );
+      const ata = await createAccount(connection, admin.payer, usdcMint, u.publicKey);
+      await mintTo(
+        connection,
+        admin.payer,
+        usdcMint,
+        ata,
+        admin.publicKey,
+        toTokenAmount(depositDollars + 10)
+      );
+      const pda = PublicKey.findProgramAddressSync(
+        [Buffer.from("user"), u.publicKey.toBuffer()],
+        program.programId
+      )[0];
+
+      await program.methods
+        .createUserAccount(u.publicKey, makeUsername(name))
+        .accountsStrict({
+          payer: admin.publicKey,
+          userAccount: pda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      await program.methods
+        .deposit(new anchor.BN(toTokenAmount(depositDollars)))
+        .accountsStrict({
+          user: u.publicKey,
+          userAccount: pda,
+          vaultState: vaultStatePda,
+          mint: usdcMint,
+          userTokenAccount: ata,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([u])
+        .rpc();
+
+      return { user: u, ata, pda };
+    };
+
+    const withdraw = async (
+      u: Keypair,
+      ata: PublicKey,
+      pda: PublicKey,
+      dollars: number
+    ) => {
+      await program.methods
+        .withdraw(new anchor.BN(toTokenAmount(dollars)))
+        .accountsStrict({
+          user: u.publicKey,
+          userAccount: pda,
+          vaultState: vaultStatePda,
+          mint: usdcMint,
+          userTokenAccount: ata,
+          vaultTokenAccount: vaultUsdcPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([u])
+        .rpc();
+    };
+
+    before(async () => {
+      const setup = await setupFundedUser("cap_user", 300);
+      capUser = setup.user;
+      capUserUsdc = setup.ata;
+      capUserPda = setup.pda;
+    });
+
+    it("$99 withdraw succeeds (first call initializes window)", async () => {
+      const before = await program.account.userAccount.fetch(capUserPda);
+      expect(before.dailyWindowStart.toNumber()).to.equal(0);
+
+      await withdraw(capUser, capUserUsdc, capUserPda, 99);
+
+      const after = await program.account.userAccount.fetch(capUserPda);
+      expect(after.dailyWithdrawn.toNumber()).to.equal(toTokenAmount(99));
+      // Window initialized to "now" (some non-zero unix timestamp).
+      expect(after.dailyWindowStart.toNumber()).to.be.greaterThan(0);
+    });
+
+    it("$1 more brings cumulative to exactly $100 (still under cap)", async () => {
+      await withdraw(capUser, capUserUsdc, capUserPda, 1);
+
+      const user = await program.account.userAccount.fetch(capUserPda);
+      expect(user.dailyWithdrawn.toNumber()).to.equal(toTokenAmount(100));
+    });
+
+    it("rejects $1 more (would push cumulative to $101 — WithdrawDailyCapExceeded)", async () => {
+      try {
+        await withdraw(capUser, capUserUsdc, capUserPda, 1);
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("WithdrawDailyCapExceeded");
+      }
+
+      // Sanity: cap counter unchanged after the failed attempt.
+      const user = await program.account.userAccount.fetch(capUserPda);
+      expect(user.dailyWithdrawn.toNumber()).to.equal(toTokenAmount(100));
+    });
+
+    it("rejects a single $101 withdraw on a fresh user (atomic over-cap)", async () => {
+      const { user, ata, pda } = await setupFundedUser("over_cap", 200);
+
+      try {
+        await withdraw(user, ata, pda, 101);
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("WithdrawDailyCapExceeded");
+      }
+
+      // Balance + counter unchanged after rejection — cap fires before debit.
+      const u = await program.account.userAccount.fetch(pda);
+      expect(u.balance.toNumber()).to.equal(toTokenAmount(200));
+      expect(u.dailyWithdrawn.toNumber()).to.equal(0);
+      expect(u.dailyWindowStart.toNumber()).to.equal(0);
+    });
+
+    it("InsufficientBalance fires before WithdrawDailyCapExceeded", async () => {
+      // A fresh user with $50 trying to withdraw $80 — balance check runs
+      // first (the cap check would otherwise let it through since $80 < $100).
+      const { user, ata, pda } = await setupFundedUser("low_bal", 50);
+
+      try {
+        await withdraw(user, ata, pda, 80);
+        expect.fail("Should have thrown");
+      } catch (err) {
+        expect(err.toString()).to.contain("InsufficientBalance");
+      }
+    });
+
+    // 24h rollover test: the window-reset path (elapsed >= 86_400 seconds)
+    // requires manipulating the cluster clock, which solana-test-validator
+    // doesn't expose out of the box. Verified manually on devnet by
+    // setting daily_window_start to (now - 86_401) via a one-shot test
+    // helper not committed here. Documented in CHANGELOG.
+  });
 });

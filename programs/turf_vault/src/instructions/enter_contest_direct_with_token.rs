@@ -2,13 +2,18 @@ use anchor_lang::prelude::*;
 use crate::state::{VaultState, UserAccount, Contest, ContestEntry, ContestStatus, EntryStatus, EntryTokenAccount, Season};
 use crate::errors::VaultError;
 
-/// Direct entry funded by an EntryTokenAccount (no USDC transferred).
-/// Same as `enter_contest_direct` but consumes a pre-purchased entry token
-/// in the same atomic transaction. No SPL token transfer occurs; seeds are
-/// still awarded.
+/// `enter_contest_direct_with_token` — Phantom-wallet entry funded by a
+/// pre-purchased EntryTokenAccount instead of USDC.
 ///
-/// Auth: the user (Phantom wallet) signs to consent to consuming their token.
-/// Admin is payer (covers PDA rent) so the user only spends SOL for the tx fee.
+/// Same as `enter_contest_direct` but consumes one of the user's
+/// EntryTokenAccount PDAs atomically (sets consumed=true). No USDC
+/// transfer; no `contest.entry_fees` increment. Seeds still awarded.
+///
+/// Auth: user signs (consents to token consumption). Admin pays SOL rent
+/// (any wallet can be payer — gating on `payer` is not necessary because
+/// the user's consent IS the authorization).
+///
+/// Paused: rejected with VaultPaused while the vault is paused.
 #[derive(Accounts)]
 #[instruction(entry_num: u32)]
 pub struct EnterContestDirectWithToken<'info> {
@@ -79,6 +84,9 @@ pub fn handle_enter_contest_direct_with_token(
     ctx: Context<EnterContestDirectWithToken>,
     entry_num: u32,
 ) -> Result<()> {
+    // v0.15.0: emergency pause guard.
+    require!(!ctx.accounts.vault_state.paused, VaultError::VaultPaused);
+
     let contest = &mut ctx.accounts.contest;
     let entry_token = &mut ctx.accounts.entry_token;
     let season = &ctx.accounts.season;

@@ -2,14 +2,18 @@ use anchor_lang::prelude::*;
 use crate::state::{VaultState, Season};
 use crate::errors::VaultError;
 
-/// Admin creates a Season with a per-entry seed-award schedule.
-/// The schedule is set once at creation and is immutable thereafter.
+/// `create_season` — define a contest season with its own seed-award schedule.
 ///
-/// PDA seeds: [b"season", season_id.to_le_bytes()] (u32 LE, 4 bytes).
+/// Seeds are loyalty points awarded per entry. The schedule is a [u64; 5]
+/// where index N is the seeds awarded for the user's Nth entry to a contest
+/// in this season (entries 5+ clamp to slot 4). For example the default
+/// schedule [25, 19, 14, 10, 7] rewards entry #0 with 25, then declining
+/// returns for subsequent entries.
 ///
-/// Auth: any 1-of-3 vault signer (same routine-op pattern as mint_entry_token).
-/// Re-creating a season with the same `season_id` is rejected by Anchor's
-/// `init` constraint (PDA already exists).
+/// The schedule is IMMUTABLE after create — re-creating with the same
+/// `season_id` is rejected by Anchor's `init` constraint.
+///
+/// Auth: 1-of-3 vault signer.
 #[derive(Accounts)]
 #[instruction(season_id: u32)]
 pub struct CreateSeason<'info> {
