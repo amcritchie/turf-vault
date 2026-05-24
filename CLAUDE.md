@@ -8,7 +8,7 @@ Anchor smart contract for contest escrow on Solana. Backend for Turf Monster (Ra
 - **Framework**: Anchor 0.32.1
 - **Rust**: 1.89.0 (via `rust-toolchain.toml`)
 - **Network**: Localnet (dev), Devnet (staging)
-- **Version**: 0.13.0
+- **Version**: 0.15.0
 - **Upgrade authority**: Squads V4 2-of-3 multisig (OPSEC-002 — see "Deploying an upgrade" below). `anchor deploy` no longer works.
 
 ## File Layout
