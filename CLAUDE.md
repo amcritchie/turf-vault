@@ -31,7 +31,6 @@ programs/turf_vault/src/
     ├── enter_contest_direct_with_token.rs # Phantom-direct entry funded by an EntryTokenAccount
     ├── settle_contest.rs # remaining_accounts pattern, requires cosigner (2-of-3)
     ├── close_contest.rs
-    ├── migrate_user_account.rs # Resize legacy UserAccount PDAs
     ├── mint_entry_token.rs # Admin mints a pre-purchased EntryTokenAccount
     ├── create_season.rs # Create a Season with an immutable seed-award schedule
     ├── force_close_vault.rs # Migration-only: requires cosigner (2-of-3)
@@ -46,7 +45,7 @@ Anchor.toml             # Program ID, cluster config, test script
 VaultState stores `signers: [Pubkey; 3]` and `threshold: u8`. Two authorization levels:
 
 ```rust
-// Any 1-of-3 for routine ops (create contest, close contest, enter, migrate)
+// Any 1-of-3 for routine ops (create contest, close contest, enter, mint token)
 pub fn is_signer(&self, key: &Pubkey) -> bool {
     self.signers.contains(key)
 }
@@ -74,7 +73,7 @@ pub fn validate_multisig(&self, s1: &Pubkey, s2: &Pubkey) -> bool {
 | `enter_contest_with_token` | 1-of-3 + `wallet` | Payer (1-of-3) plus the token owner `wallet` signs (OPSEC-004) |
 | `enter_contest_direct_with_token` | User signs | User authorizes token consumption; admin pays PDA rent |
 | `mint_entry_token` | 1-of-3 | Any signer can mint a token for any wallet |
-| `migrate_user_account` | 1-of-3 | Any signer can migrate |
+| `set_username` | User signs | Wallet owner signs; v0.15.1 adds on-chain validation (reserved prefixes, ASCII, length floor) |
 | `settle_contest` | **2-of-3** | Requires `admin` + `cosigner` |
 | `force_close_vault` | **2-of-3** | Requires `admin` + `cosigner` |
 | `update_signers` | **2-of-3** | Requires `admin` + `cosigner`; new set must keep ≥1 cosigner (OPSEC-027) |
@@ -151,13 +150,18 @@ All accounts use `#[derive(InitSpace)]`. Contest has `#[max_len(10)]` on `payout
 | 6008 | SettlementOverflow | Payouts > entry_fees + prizes |
 | 6009 | Overflow | Arithmetic overflow |
 | 6010 | InvalidPayoutTiers | `payout_amounts` does not sum to `prizes` |
-| 6011 | AccountAlreadyMigrated | Account is already ≥ expected size — cannot migrate |
-| 6012 | InvalidAccountData | Account data parsing failed / wrong discriminator |
+| 6011 | AccountAlreadyMigrated | Used by `force_close_vault` (kept for numbering stability; `migrate_user_account` removed in v0.15.1) |
+| 6012 | InvalidAccountData | Reserved (was used by `migrate_user_account`, kept for numbering stability) |
 | 6013 | InvalidThreshold | Threshold must be 1-3 |
 | 6014 | DuplicateSigner | Duplicate signer in array |
 | 6015 | EntryTokenAlreadyConsumed | Redeeming an already-consumed entry token |
 | 6016 | EntryTokenWrongOwner | Entry token owner ≠ the wallet entering |
 | 6017 | SignerContinuityRequired | `update_signers` drops all current cosigners |
+| 6018 | VaultPaused | Funds-touching op called while vault is paused (v0.15.0) |
+| 6019 | WithdrawDailyCapExceeded | Withdraw would exceed $100 / rolling 24h per-user cap (v0.15.0) |
+| 6020 | UsernameReserved | Username uses a reserved prefix — admin, system, turf, vault, support, etc. (v0.15.1, audit C2) |
+| 6021 | UsernameInvalidChars | Username has bytes outside printable ASCII 0x20..0x7E (v0.15.1, audit C2) |
+| 6022 | UsernameTooShort | Username has fewer than 3 non-null bytes (v0.15.1, audit C2) |
 
 ## Testing
 
@@ -289,7 +293,7 @@ bin/rails solana:init_vault INIT=true SIGNERS=addr1,addr2,addr3 THRESHOLD=2
 - **USDT Mint**: `9mxkN8KaVA8FFgDE2LEsn2UbYLPG8Xg9bf4V9MYYi8Ne` (test, 6 decimals)
 - **IDL Account**: `66fFnyBykZRKrbU3dGzkd8udoadgMtH2u9XCj9nA5x75`
 
-**Status**: v0.13.0 deployed on devnet. 2-of-3 multisig for treasury ops; program upgrade authority is a Squads V4 2-of-3 multisig. Vault initialized with 3 signers (Alex Bot, Alex, Mason), threshold 2.
+**Status**: v0.14.0 deployed on devnet (username field on UserAccount). v0.15.1 is staged in `main` awaiting the next Squads upgrade — closes prelaunch audit C1 (delete `migrate_user_account`), C2 (`set_username` + `create_user_account` validation), H1 (PDA-seed-bind Contest in entry/settle). 2-of-3 multisig for treasury ops; program upgrade authority is a Squads V4 2-of-3 multisig. Vault initialized with 3 signers (Alex Bot, Alex, Mason), threshold 2. New IDL hash pre-computed: `3112af26400f53c0fe93cedc7956a4efe6ed1c18eb1f42f8e7fa44178ea83401`.
 
 > **Note**: the program was migrated off the orphaned ID `7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J` on 2026-05-18 (its upgrade authority was lost). ~3.45 SOL of rent stays locked at the old program forever (devnet only).
 
