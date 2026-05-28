@@ -1,51 +1,48 @@
 use anchor_lang::prelude::*;
-use crate::state::{VaultState, UserAccount, Contest, ContestEntry, ContestStatus, EntryStatus, EntryTokenAccount, Season};
+use crate::state::{
+    VaultState, UserAccount, Contest, ContestEntry, ContestStatus, EntryStatus, EntryTokenAccount, Season,
+};
 use crate::errors::VaultError;
 
-/// `enter_contest_with_token` — managed entry funded by a pre-purchased
-/// EntryTokenAccount instead of USDC.
+/// `enter_contest_with_token` — entry funded by consuming an
+/// EntryTokenAccount instead of paying any currency.
 ///
-/// Same as `enter_contest` but atomically consumes one of the user's
-/// EntryTokenAccount PDAs (sets consumed=true). No USDC charge,
-/// `contest.entry_fees` is NOT incremented (operator subsidizes the prize
-/// pool for token-funded entries). Seeds still awarded.
+/// Same as `enter_contest` minus the SPL transfer + per-currency tally
+/// increment. Awards seeds, bumps user counters, marks the entry as
+/// token-funded via `currency_idx = u8::MAX` (sentinel — see §11 Q2).
 ///
-/// Auth: 1-of-3 vault signer (payer) AND the wallet itself co-signs. The
-/// wallet co-sign (OPSEC-004) closes the "compromised admin key burns a
-/// user's token without consent" attack — Rails server holds the managed
-/// wallet's keypair and co-signs.
+/// Auth: user signs (consents to token consumption — OPSEC-004).
+/// 1-of-3 vault signer pays rent (OPSEC-024).
 ///
 /// Paused: rejected with VaultPaused while the vault is paused.
+///
+/// VaultState is zero-copy (v0.16) — `vault_state.load()?` for reads.
 #[derive(Accounts)]
 #[instruction(entry_num: u32)]
 pub struct EnterContestWithToken<'info> {
+    /// Admin pays rent for the ContestEntry PDA.
     #[account(mut)]
     pub payer: Signer<'info>,
 
-    /// The wallet that owns the user account + the entry token being consumed.
-    /// OPSEC-004: now a required Signer. Previously an UncheckedAccount, which
-    /// let any 1-of-3 vault signer (e.g. a compromised Alex Bot key) burn ANY
-    /// user's entry token without the owner's consent. For managed (web2)
-    /// wallets the server co-signs with the user's custodial keypair — so a
-    /// leaked admin key alone is no longer sufficient to consume tokens.
-    pub wallet: Signer<'info>,
-
-    #[account(
-        seeds = [b"vault"],
-        bump = vault_state.bump,
-        constraint = vault_state.is_signer(&payer.key()) @ VaultError::Unauthorized,
-    )]
-    pub vault_state: Account<'info, VaultState>,
+    /// The user's wallet — signs to authorize token consumption (OPSEC-004).
+    #[account(mut)]
+    pub user: Signer<'info>,
 
     #[account(
         mut,
-        seeds = [b"user", wallet.key().as_ref()],
+        seeds = [b"user", user.key().as_ref()],
         bump = user_account.bump,
     )]
     pub user_account: Account<'info, UserAccount>,
 
-    // H1 prelaunch audit (2026-05-24): PDA-seed-bind Contest. See
-    // enter_contest.rs for the attack scenario this closes.
+    #[account(
+        seeds = [b"vault"],
+        bump = vault_state.load()?.bump,
+        constraint = vault_state.load()?.is_signer(&payer.key()) @ VaultError::Unauthorized,
+    )]
+    pub vault_state: AccountLoader<'info, VaultState>,
+
+    // H1 prelaunch audit: PDA-seed-bind Contest.
     #[account(
         mut,
         seeds = [b"contest", contest.contest_id.as_ref()],
@@ -62,7 +59,7 @@ pub struct EnterContestWithToken<'info> {
         seeds = [
             b"entry",
             contest.contest_id.as_ref(),
-            wallet.key().as_ref(),
+            user.key().as_ref(),
             &entry_num.to_le_bytes(),
         ],
         bump,
@@ -70,17 +67,15 @@ pub struct EnterContestWithToken<'info> {
     pub contest_entry: Account<'info, ContestEntry>,
 
     /// EntryTokenAccount being consumed to fund this entry.
-    /// Must be owned (logically) by `wallet` and not yet consumed.
+    /// Must be owned by `user` and not yet consumed.
     #[account(
         mut,
-        constraint = entry_token.owner == wallet.key() @ VaultError::EntryTokenWrongOwner,
+        constraint = entry_token.owner == user.key() @ VaultError::EntryTokenWrongOwner,
         constraint = !entry_token.consumed @ VaultError::EntryTokenAlreadyConsumed,
     )]
     pub entry_token: Account<'info, EntryTokenAccount>,
 
-    /// Season whose seed_schedule controls per-entry seed awards.
-    /// OPSEC-023: seeds-pinned to the contest's bound season so a caller
-    /// can't substitute a richer-reward season.
+    /// Pinned-season seed schedule (OPSEC-023).
     #[account(
         seeds = [b"season", contest.season_id.to_le_bytes().as_ref()],
         bump = season.bump,
@@ -94,37 +89,50 @@ pub fn handle_enter_contest_with_token(
     ctx: Context<EnterContestWithToken>,
     entry_num: u32,
 ) -> Result<()> {
-    // v0.15.0: emergency pause guard.
-    require!(!ctx.accounts.vault_state.paused, VaultError::VaultPaused);
+    // Pause guard. Scope the Ref so it drops before other borrows.
+    {
+        let vault = ctx.accounts.vault_state.load()?;
+        require!(vault.paused == 0, VaultError::VaultPaused);
+    }
 
-    let user = &mut ctx.accounts.user_account;
     let contest = &mut ctx.accounts.contest;
     let entry_token = &mut ctx.accounts.entry_token;
     let season = &ctx.accounts.season;
+    let user_account = &mut ctx.accounts.user_account;
 
-    // NOTE: No USDC entry fee is debited. The token IS the payment.
-    // `contest.entry_fees` is NOT incremented (no fee collected).
-    contest.current_entries = contest.current_entries.checked_add(1).ok_or(VaultError::Overflow)?;
+    // No SPL transfer. The token IS the payment.
+    contest.current_entries = contest
+        .current_entries
+        .checked_add(1)
+        .ok_or(VaultError::Overflow)?;
 
-    // Award seeds from the season schedule (token entries still progress the user's level)
-    // Entries 5+ clamp to slot 4.
-    let idx = (entry_num as usize).min(4);
-    user.seeds = user.seeds.checked_add(season.seed_schedule[idx]).ok_or(VaultError::Overflow)?;
+    // Award seeds + bump user counters.
+    let seed_idx = (entry_num as usize).min(4);
+    user_account.seeds = user_account
+        .seeds
+        .checked_add(season.seed_schedule[seed_idx])
+        .ok_or(VaultError::Overflow)?;
+    user_account.entries = user_account
+        .entries
+        .checked_add(1)
+        .ok_or(VaultError::Overflow)?;
 
-    // Consume the entry token
+    // Consume the entry token.
     let now = Clock::get()?.unix_timestamp;
     entry_token.consumed = true;
     entry_token.consumed_at = Some(now);
 
-    // Create entry
+    // Initialize the entry — currency_idx = u8::MAX (token-funded sentinel).
     let entry = &mut ctx.accounts.contest_entry;
     entry.contest_id = contest.contest_id;
-    entry.wallet = ctx.accounts.wallet.key();
+    entry.wallet = ctx.accounts.user.key();
     entry.entry_num = entry_num;
     entry.status = EntryStatus::Active;
     entry.rank = 0;
     entry.payout = 0;
+    entry.currency_idx = u8::MAX;
     entry.bump = ctx.bumps.contest_entry;
+    entry._reserved = [0; 16];
 
     msg!(
         "Token-funded entry {} for wallet {}. Token consumed at {}. Current entries: {}",

@@ -4,55 +4,86 @@ use anchor_lang::prelude::*;
 /// reserved range for program-defined errors; the numbering here is
 /// stable across versions (don't renumber — Rails error-decoding maps
 /// integer codes to messages).
+///
+/// v0.16 retired codes (kept for numbering stability — variants stay
+/// in the enum but no path emits them):
+///   - 6011 AccountAlreadyMigrated (retired with v0.15.1)
+///   - 6012 InvalidAccountData (was reserved)
+///   - 6017 SignerContinuityRequired (no `update_signers` in v0.16)
+///   - 6019 WithdrawDailyCapExceeded (no more daily cap)
+///
+/// v0.16 new codes start at 6023.
 #[error_code]
 pub enum VaultError {
+    // ── 6000-6022: stable from v0.15.1 ────────────────────────────────────
     #[msg("Only the vault admin can perform this action")]
-    Unauthorized,
+    Unauthorized,                                // 6000
     #[msg("Token mint is not accepted by this vault")]
-    InvalidMint,
+    InvalidMint,                                 // 6001
     #[msg("Insufficient balance for this operation")]
-    InsufficientBalance,
+    InsufficientBalance,                         // 6002
     #[msg("Contest is not open for entries")]
-    ContestNotOpen,
+    ContestNotOpen,                              // 6003
     #[msg("Contest is full")]
-    ContestFull,
+    ContestFull,                                 // 6004
     #[msg("Contest has not been settled")]
-    ContestNotSettled,
+    ContestNotSettled,                           // 6005
     #[msg("Contest is already settled")]
-    ContestAlreadySettled,
+    ContestAlreadySettled,                       // 6006
     #[msg("User already entered this contest with this entry number")]
-    DuplicateEntry,
-    #[msg("Settlement payouts exceed entry fees plus prizes")]
-    SettlementOverflow,
+    DuplicateEntry,                              // 6007
+    #[msg("Settlement payouts exceed prize pool")]
+    SettlementOverflow,                          // 6008
     #[msg("Arithmetic overflow")]
-    Overflow,
-    #[msg("Payout amounts must sum to prizes amount")]
-    InvalidPayoutTiers,
+    Overflow,                                    // 6009
+    #[msg("Payout amounts must sum to prize_pool amount")]
+    InvalidPayoutTiers,                          // 6010
     #[msg("Account is already larger than expected — cannot migrate")]
-    AccountAlreadyMigrated,
+    AccountAlreadyMigrated,                      // 6011 — retired
     #[msg("Account data is invalid or has wrong discriminator")]
-    InvalidAccountData,
+    InvalidAccountData,                          // 6012 — retired
     #[msg("Invalid threshold: must be 1-3")]
-    InvalidThreshold,
+    InvalidThreshold,                            // 6013
     #[msg("Duplicate signer in signers array")]
-    DuplicateSigner,
+    DuplicateSigner,                             // 6014
     #[msg("Entry token has already been consumed")]
-    EntryTokenAlreadyConsumed,
+    EntryTokenAlreadyConsumed,                   // 6015
     #[msg("Entry token owner does not match the wallet entering the contest")]
-    EntryTokenWrongOwner,
+    EntryTokenWrongOwner,                        // 6016
     #[msg("New signer set must retain at least one current cosigner")]
-    SignerContinuityRequired,
-    // ─── v0.15.0 ──────────────────────────────────────────────────────────
+    SignerContinuityRequired,                    // 6017 — retired
     #[msg("Vault is paused — user-facing funds operations are temporarily disabled")]
-    VaultPaused,
-    #[msg("Withdrawal would exceed the $100 / 24h per-user cap")]
-    WithdrawDailyCapExceeded,
-    // ─── v0.15.1 ──────────────────────────────────────────────────────────
-    // Prelaunch audit C2 — username validation on create_user_account + set_username.
+    VaultPaused,                                 // 6018
+    #[msg("Withdrawal would exceed the per-user daily cap")]
+    WithdrawDailyCapExceeded,                    // 6019 — retired
     #[msg("Username uses a reserved prefix")]
-    UsernameReserved,
+    UsernameReserved,                            // 6020
     #[msg("Username contains characters that are not printable ASCII (0x20..0x7E)")]
-    UsernameInvalidChars,
+    UsernameInvalidChars,                        // 6021
     #[msg("Username must be at least 3 characters")]
-    UsernameTooShort,
+    UsernameTooShort,                            // 6022
+
+    // ── 6023+: new in v0.16 ───────────────────────────────────────────────
+    #[msg("Currency mint is already registered in the vault registry")]
+    CurrencyAlreadyRegistered,                   // 6023
+    #[msg("Vault currency registry is full")]
+    CurrencyRegistryFull,                        // 6024
+    #[msg("Currency index is out of range or refers to an unused slot")]
+    InvalidCurrencyIndex,                        // 6025
+    #[msg("Currency is registered but deactivated")]
+    CurrencyNotActive,                           // 6026
+    #[msg("Contest does not accept this currency (entry fee is zero)")]
+    EntryFeeNotSet,                              // 6027
+    #[msg("Contest is not locked")]
+    ContestNotLocked,                            // 6028
+    #[msg("Contest cannot be cancelled in its current status")]
+    ContestNotCancellable,                       // 6029
+    #[msg("Prize pool account still holds tokens — cannot close contest")]
+    PrizePoolNotEmpty,                           // 6030
+    #[msg("Operator-revenue account is empty — nothing to sweep")]
+    EmptyRevenueAccount,                         // 6031
+    #[msg("Treasury ATA owner does not match the pinned treasury authority")]
+    TreasuryAuthorityMismatch,                   // 6032
+    #[msg("Contest must have at least one entry fee or a non-zero prize pool")]
+    FeeAndPrizeBothZero,                         // 6033
 }

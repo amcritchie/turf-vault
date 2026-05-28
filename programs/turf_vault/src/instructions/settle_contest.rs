@@ -1,25 +1,40 @@
 use anchor_lang::prelude::*;
+use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 use crate::state::{VaultState, UserAccount, Contest, ContestEntry, ContestStatus, EntryStatus};
 use crate::errors::VaultError;
 
-/// `settle_contest` — grade a contest and credit payouts.
+/// `settle_contest` — grade a contest, disburse USDC payouts.
 ///
-/// Takes a `Vec<Settlement>` (one per entry, including losers with payout=0)
-/// and a pair of remaining_accounts per Settlement: [user_account, contest_entry].
-/// Verifies each pair against the expected PDA seeds, then:
-///   - Adds `payout` to UserAccount.balance + total_won
-///   - Sets ContestEntry rank + payout, transitions Active → Won/Lost
+/// For each Settlement entry, performs an SPL transfer of `payout` USDC
+/// from the contest's prize_pool PDA → the winner's USDC ATA (signed by
+/// vault_state PDA), then updates the ContestEntry and UserAccount stats.
 ///
-/// Cap: total payouts ≤ contest.entry_fees + contest.prizes. Anchor's
-/// remaining_accounts pattern lets us settle a variable number of entries
-/// in one TX (up to compute-budget limits — ~25-30 entries per call on mainnet).
+/// remaining_accounts pattern: per settlement, 3 accounts in order:
+///   [user_account_pda, contest_entry_pda, winner_usdc_ata]
 ///
-/// Auth: 2-of-3 (admin + cosigner). Settle is the only path that credits
-/// balances to users, so it requires the highest authorization.
+/// Validation:
+///   - 2-of-3 multisig (constraint).
+///   - contest.status is Open or Locked.
+///   - payout_mint == vault_state.payout_mint (USDC pin).
+///   - sum(payouts) <= contest.prize_pool. Entry fees are NOT included
+///     anymore — they sit in op_rev ATAs, separate from the prize pool.
+///   - No duplicate (wallet, entry_num) in the vec.
+///   - remaining_accounts.len() == settlements.len() * 3.
 ///
-/// Refusals:
-///   - Duplicate (wallet, entry_num) in the Vec — would double-credit a user
-///   - A ContestEntry already settled (status != Active) — defense in depth
+/// Per winner:
+///   - SPL Transfer (PDA-signed): prize_pool → winner_usdc_ata.
+///   - ContestEntry: status Active → Won (if payout > 0) or Lost.
+///   - UserAccount: total_won += payout, cashes += (payout > 0),
+///     wins += (rank == 1).
+///
+/// Final: contest.status = Settled.
+///
+/// CU budget: roughly 5k base + 7k per winner; ≤ 25 winners fits the
+/// default 200k budget. Rails sets `set_compute_unit_limit(400_000)`
+/// on every settle TX (decided §11 Q7).
+///
+/// VaultState is zero-copy (v0.16). Vault is read via `load()?` for
+/// signer-seed derivation; the multisig check stays in the constraint.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct Settlement {
     pub wallet: Pubkey,
@@ -37,47 +52,59 @@ pub struct SettleContest<'info> {
 
     #[account(
         seeds = [b"vault"],
-        bump = vault_state.bump,
-        constraint = vault_state.validate_multisig(&admin.key(), &cosigner.key()) @ VaultError::Unauthorized,
+        bump = vault_state.load()?.bump,
+        constraint = vault_state.load()?.validate_multisig(&admin.key(), &cosigner.key()) @ VaultError::Unauthorized,
     )]
-    pub vault_state: Account<'info, VaultState>,
+    pub vault_state: AccountLoader<'info, VaultState>,
 
-    // H1 prelaunch audit (2026-05-24): PDA-seed-bind Contest. Defense
-    // in depth — a careless cosigner approving a Squad TX where the
-    // Contest account doesn't match its stored contest_id would now be
-    // rejected on-chain.
     #[account(
         mut,
         seeds = [b"contest", contest.contest_id.as_ref()],
         bump = contest.bump,
-        constraint = contest.status == ContestStatus::Open || contest.status == ContestStatus::Locked @ VaultError::ContestAlreadySettled,
+        constraint = (contest.status == ContestStatus::Open || contest.status == ContestStatus::Locked)
+            @ VaultError::ContestAlreadySettled,
     )]
     pub contest: Account<'info, Contest>,
 
-    // Remaining accounts: pairs of [user_account, contest_entry] for each settlement
+    /// Contest's USDC prize pool PDA — source of payouts.
+    #[account(
+        mut,
+        seeds = [b"prize_pool", contest.contest_id.as_ref()],
+        bump,
+        token::mint = payout_mint,
+        token::authority = vault_state,
+    )]
+    pub prize_pool: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        constraint = payout_mint.key() == vault_state.load()?.payout_mint @ VaultError::InvalidMint,
+    )]
+    pub payout_mint: Box<Account<'info, Mint>>,
+
+    pub token_program: Program<'info, Token>,
+
+    // remaining_accounts: triples per winner.
+    //   [user_account, contest_entry, winner_usdc_ata]
 }
 
-pub fn handle_settle_contest(ctx: Context<SettleContest>, settlements: Vec<Settlement>) -> Result<()> {
+pub fn handle_settle_contest<'info>(
+    ctx: Context<'_, '_, '_, 'info, SettleContest<'info>>,
+    settlements: Vec<Settlement>,
+) -> Result<()> {
     let contest = &mut ctx.accounts.contest;
 
-    // Validate total payouts don't exceed entry_fees + prizes
+    // Validate total payouts ≤ prize_pool (entry fees no longer count).
     let total_payouts: u64 = settlements
         .iter()
         .map(|s| s.payout)
         .try_fold(0u64, |acc, p| acc.checked_add(p))
         .ok_or(VaultError::Overflow)?;
+    require!(
+        total_payouts <= contest.prize_pool,
+        VaultError::SettlementOverflow
+    );
 
-    let max_payout = contest
-        .entry_fees
-        .checked_add(contest.prizes)
-        .ok_or(VaultError::Overflow)?;
-    require!(total_payouts <= max_payout, VaultError::SettlementOverflow);
-
-    // Reject duplicate (wallet, entry_num) pairs in the settlement vec.
-    // Without this, the same entry could be credited twice in a single
-    // settle call — the second iteration sees the first iteration's write
-    // (since we re-deserialize from account data each pass) and adds again,
-    // bypassing the total_payouts cap on the actual user balance.
+    // Reject duplicate (wallet, entry_num) pairs.
     let mut seen: Vec<(Pubkey, u32)> = Vec::with_capacity(settlements.len());
     for s in settlements.iter() {
         let key = (s.wallet, s.entry_num);
@@ -85,23 +112,35 @@ pub fn handle_settle_contest(ctx: Context<SettleContest>, settlements: Vec<Settl
         seen.push(key);
     }
 
-    // Process each settlement via remaining accounts
     let remaining = &ctx.remaining_accounts;
-    require!(remaining.len() == settlements.len() * 2, VaultError::Unauthorized);
+    require!(
+        remaining.len() == settlements.len() * 3,
+        VaultError::Unauthorized
+    );
+
+    // Precompute the vault_state PDA signer seeds for SPL transfers.
+    // load() returns a Ref; pull bump out so we don't hold the Ref across
+    // CPI calls (the AccountInfo borrow conflicts otherwise).
+    let vault_bump = ctx.accounts.vault_state.load()?.bump;
+    let vault_seeds: &[&[u8]] = &[b"vault", core::slice::from_ref(&vault_bump)];
+    let signer_seeds = &[vault_seeds];
 
     for (i, settlement) in settlements.iter().enumerate() {
-        // Load user account
-        let user_account_info = &remaining[i * 2];
-        let entry_account_info = &remaining[i * 2 + 1];
+        let user_account_info = &remaining[i * 3];
+        let entry_account_info = &remaining[i * 3 + 1];
+        let winner_ata_info = &remaining[i * 3 + 2];
 
-        // Verify PDA seeds for user account
+        // Verify PDA seeds for user account.
         let (expected_user_pda, _) = Pubkey::find_program_address(
             &[b"user", settlement.wallet.as_ref()],
             ctx.program_id,
         );
-        require!(user_account_info.key() == expected_user_pda, VaultError::Unauthorized);
+        require!(
+            user_account_info.key() == expected_user_pda,
+            VaultError::Unauthorized
+        );
 
-        // Verify PDA seeds for entry
+        // Verify PDA seeds for entry.
         let (expected_entry_pda, _) = Pubkey::find_program_address(
             &[
                 b"entry",
@@ -111,38 +150,74 @@ pub fn handle_settle_contest(ctx: Context<SettleContest>, settlements: Vec<Settl
             ],
             ctx.program_id,
         );
-        require!(entry_account_info.key() == expected_entry_pda, VaultError::Unauthorized);
+        require!(
+            entry_account_info.key() == expected_entry_pda,
+            VaultError::Unauthorized
+        );
 
-        // Deserialize and update user account
-        let mut user_data = user_account_info.try_borrow_mut_data()?;
-        let mut user: UserAccount =
-            UserAccount::try_deserialize(&mut &user_data[..])?;
-        user.balance = user.balance.checked_add(settlement.payout).ok_or(VaultError::Overflow)?;
-        user.total_won = user.total_won.checked_add(settlement.payout).ok_or(VaultError::Overflow)?;
-        let mut writer = &mut user_data[..];
-        user.try_serialize(&mut writer)?;
+        // SPL transfer (PDA-signed): prize_pool → winner_usdc_ata.
+        // Only emit the CPI if there's a non-zero payout — saves CU for
+        // ranked-but-zero-payout entries.
+        if settlement.payout > 0 {
+            let cpi_accounts = Transfer {
+                from: ctx.accounts.prize_pool.to_account_info(),
+                to: winner_ata_info.clone(),
+                authority: ctx.accounts.vault_state.to_account_info(),
+            };
+            let cpi_ctx = CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                cpi_accounts,
+                signer_seeds,
+            );
+            token::transfer(cpi_ctx, settlement.payout)?;
+        }
 
-        // Deserialize and update entry
-        let mut entry_data = entry_account_info.try_borrow_mut_data()?;
-        let mut entry: ContestEntry =
-            ContestEntry::try_deserialize(&mut &entry_data[..])?;
-        // Refuse to mutate an entry that's already been settled. Combined
-        // with the dedup check above, this blocks double-payout via any
-        // path (duplicate in vec, or a second settle call referencing the
-        // same entry).
-        require!(entry.status == EntryStatus::Active, VaultError::ContestAlreadySettled);
-        entry.rank = settlement.rank;
-        entry.payout = settlement.payout;
-        entry.status = if settlement.payout > 0 {
-            EntryStatus::Won
-        } else {
-            EntryStatus::Lost
-        };
-        let mut writer = &mut entry_data[..];
-        entry.try_serialize(&mut writer)?;
+        // Update user account: total_won, cashes (any payout), wins (rank == 1).
+        {
+            let mut user_data = user_account_info.try_borrow_mut_data()?;
+            let mut user: UserAccount = UserAccount::try_deserialize(&mut &user_data[..])?;
+            user.total_won = user
+                .total_won
+                .checked_add(settlement.payout)
+                .ok_or(VaultError::Overflow)?;
+            if settlement.payout > 0 {
+                user.cashes = user.cashes.checked_add(1).ok_or(VaultError::Overflow)?;
+            }
+            if settlement.rank == 1 {
+                user.wins = user.wins.checked_add(1).ok_or(VaultError::Overflow)?;
+            }
+            let mut writer = &mut user_data[..];
+            user.try_serialize(&mut writer)?;
+        }
+
+        // Update entry.
+        {
+            let mut entry_data = entry_account_info.try_borrow_mut_data()?;
+            let mut entry: ContestEntry =
+                ContestEntry::try_deserialize(&mut &entry_data[..])?;
+            // Refuse to re-settle an entry already in Won/Lost. Defense in
+            // depth against replay across multiple settle calls.
+            require!(
+                entry.status == EntryStatus::Active,
+                VaultError::ContestAlreadySettled
+            );
+            entry.rank = settlement.rank;
+            entry.payout = settlement.payout;
+            entry.status = if settlement.payout > 0 {
+                EntryStatus::Won
+            } else {
+                EntryStatus::Lost
+            };
+            let mut writer = &mut entry_data[..];
+            entry.try_serialize(&mut writer)?;
+        }
     }
 
     contest.status = ContestStatus::Settled;
-    msg!("Contest settled. {} entries processed", settlements.len());
+    msg!(
+        "Contest settled. {} entries processed, total_payouts: {}",
+        settlements.len(),
+        total_payouts
+    );
     Ok(())
 }

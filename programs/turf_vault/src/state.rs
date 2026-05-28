@@ -16,10 +16,13 @@ use anchor_lang::prelude::*;
 //   --features mainnet — uses canonical mainnet USDC + USDT mints
 // ──────────────────────────────────────────────────────────────────────────
 
-// The H1 hardening constants (INIT_AUTHORITY + EXPECTED_USDC/USDT_MINT)
-// are only used by `initialize.rs` under #[cfg(feature = "mainnet")]. They
-// are feature-gated here for the same reason — without `mainnet`, they
-// don't exist, so a stray reference in non-mainnet code wouldn't compile.
+/// Maximum number of currencies in the on-chain registry. Capped at 16 to
+/// keep `accepted_currencies` at 1280 bytes (16 × 80) and `entry_fee_by_currency`
+/// / `entry_fees` at 128 bytes (16 × 8) each.
+pub const MAX_CURRENCIES: usize = 16;
+
+/// Max payout tiers per contest. Mirrors the v0.15.1 `#[max_len(10)]`.
+pub const MAX_PAYOUT_TIERS: usize = 10;
 
 /// The single wallet permitted to call `initialize` on a mainnet build.
 /// Hardcoded to Alex's Phantom key — never lives on the server, so a
@@ -37,7 +40,8 @@ pub const INIT_AUTHORITY: Pubkey = Pubkey::new_from_array([
     127, 147, 165, 62, 97, 27, 221, 166, 58, 24, 35, 40, 64, 79, 47, 199,
 ]);
 
-/// USDC mint accepted by a mainnet build (canonical Circle USDC).
+/// USDC mint pinned by a mainnet build (canonical Circle USDC). Used to
+/// pin both `vault_state.payout_mint` AND `accepted_currencies[0].mint`.
 /// Bytes = base58 decode of `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`.
 #[cfg(feature = "mainnet")]
 pub const EXPECTED_USDC_MINT: Pubkey = Pubkey::new_from_array([
@@ -45,7 +49,9 @@ pub const EXPECTED_USDC_MINT: Pubkey = Pubkey::new_from_array([
     177, 187, 228, 194, 210, 246, 224, 228, 124, 166, 2, 3, 69, 47, 93, 97,
 ]);
 
-/// USDT mint accepted by a mainnet build (canonical Tether USDT).
+/// USDT mint pinned by a mainnet build (canonical Tether USDT). Used to
+/// pin `accepted_currencies[1].mint`. (USDT is not the payout mint in v0.16;
+/// it's just the second pre-registered entry-fee currency.)
 /// Bytes = base58 decode of `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB`.
 #[cfg(feature = "mainnet")]
 pub const EXPECTED_USDT_MINT: Pubkey = Pubkey::new_from_array([
@@ -53,50 +59,94 @@ pub const EXPECTED_USDT_MINT: Pubkey = Pubkey::new_from_array([
     63, 150, 90, 51, 187, 130, 210, 199, 2, 158, 178, 206, 30, 32, 130, 100,
 ]);
 
-/// Per-user withdraw cap in a rolling 24-hour window. 6-decimal USDC:
-/// 100_000_000 = $100. Creates friction for both legit users and attackers
-/// who steal a user's keypair — caps loss-per-day-per-account at $100.
-pub const DAILY_WITHDRAW_CAP: u64 = 100_000_000;
+// ──────────────────────────────────────────────────────────────────────────
+// AcceptedCurrency
+// ──────────────────────────────────────────────────────────────────────────
 
-/// Rolling-window length for the withdraw cap. 24 hours in seconds.
-pub const DAILY_WINDOW_SECONDS: i64 = 86_400;
+/// One slot in the on-chain currency registry. `mint == Pubkey::default()`
+/// means the slot is unused. `active == 0` means the slot is registered
+/// but disabled for new entries / new contests (slot is never reclaimed —
+/// preserves currency_idx stability across the program's life).
+///
+/// `kind` is an operator tag (0 = stablecoin, 1 = sol-wrapped, etc.) —
+/// informational only, never consulted by program logic. `_pad` reserves
+/// 14 bytes for future fields (per-currency fee-cap, display ticker, etc.).
+///
+/// Zero-copy (Pod-safe): `active` is u8 (0/1) rather than bool — bool is
+/// not Pod-safe because non-{0,1} byte values cause undefined behavior.
+/// We provide unsafe Pod + Zeroable impls so this struct can sit inside
+/// `VaultState`'s `accepted_currencies: [AcceptedCurrency; 16]` and be
+/// re-interpreted from the account's raw bytes via bytemuck.
+#[repr(C)]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy)]
+pub struct AcceptedCurrency {
+    /// SPL mint for this currency. `Pubkey::default()` for unused slots.
+    pub mint: Pubkey,             // 32
+    /// Per-currency operator-revenue ATA (PDA at [b"op_rev", mint]).
+    pub op_rev_ata: Pubkey,       // 32
+    /// Operator tag (0 = stablecoin, 1 = sol-wrapped, ...). Informational.
+    pub kind: u8,                 //  1
+    /// 1 == active; 0 == deactivated. Flip to 0 via `deactivate_currency`.
+    /// u8 instead of bool for Pod safety (zero-copy compatibility).
+    pub active: u8,               //  1
+    /// Reserved padding for forward-compat. 14 bytes brings the struct to
+    /// 80 bytes total for clean alignment + future field expansion.
+    pub _pad: [u8; 14],           // 14
+}
+// Total: 80 bytes per slot. 16 slots = 1280 bytes.
+
+// SAFETY: AcceptedCurrency is `#[repr(C)]` and every field is itself Pod
+// (Pubkey is Pod via solana_program, u8 + u8 + [u8; 14] are trivially Pod).
+// No padding bytes — fields pack to exactly 80 bytes (32+32+1+1+14).
+unsafe impl anchor_lang::__private::bytemuck::Pod for AcceptedCurrency {}
+unsafe impl anchor_lang::__private::bytemuck::Zeroable for AcceptedCurrency {}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Accounts
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Singleton vault account. Holds the 2-of-3 multisig signer set, the two
-/// accepted token mints, the vault's token accounts, a bump, and a pause
-/// flag (v0.15.0).
+/// Singleton vault account. Holds the 2-of-3 multisig signer set, the
+/// pinned payout mint (USDC), the per-currency registry, a treasury
+/// authority pin (Squads vault PDA), and a pause flag.
 ///
 /// PDA seeds: [b"vault"]
-#[account]
-#[derive(InitSpace)]
+///
+/// Zero-copy: VaultState is too large (~1475 data bytes) to deserialize
+/// onto BPF's 4KB stack via borsh. Anchor's `#[account(zero_copy)]` maps
+/// the account data buffer directly as a typed reference via bytemuck::Pod,
+/// avoiding the full-struct stack alloc that borsh's deserialize_reader
+/// would perform.
+///
+/// `paused` is u8 (0/1) rather than bool for Pod safety.
+#[account(zero_copy(unsafe))]
+#[repr(C)]
 pub struct VaultState {
     /// The three multisig signers. 1-of-3 can run routine ops; 2-of-3
-    /// needed for treasury ops (settle, force_close, update_signers,
-    /// pause, unpause).
-    pub signers: [Pubkey; 3],
+    /// needed for treasury ops (settle, register/deactivate_currency,
+    /// cancel_contest, sweep_operator_revenue, unlock_contest, pause/unpause).
+    pub signers: [Pubkey; 3],                          //   96
     /// Number of distinct signatures required for treasury ops. Currently 2.
-    pub threshold: u8,
-    /// USDC mint this vault accepts. Set once at init; verified against
-    /// EXPECTED_USDC_MINT.
-    pub usdc_mint: Pubkey,
-    /// USDT mint this vault accepts. Set once at init; verified against
-    /// EXPECTED_USDT_MINT.
-    pub usdt_mint: Pubkey,
-    /// Vault's USDC token account (PDA, authority = this vault_state).
-    pub vault_usdc: Pubkey,
-    /// Vault's USDT token account (PDA, authority = this vault_state).
-    pub vault_usdt: Pubkey,
+    pub threshold: u8,                                 //    1
     /// PDA bump.
-    pub bump: u8,
-    /// Emergency pause flag (v0.15.0). When true, deposit / withdraw /
-    /// enter_contest* are rejected. Settle, close, mint_entry_token,
-    /// migrate, set_username, create_user_account, create_season,
-    /// update_signers, force_close, pause, unpause remain available.
-    /// Flipped via the `pause` / `unpause` instructions (2-of-3).
-    pub paused: bool,
+    pub bump: u8,                                      //    1
+    /// Emergency pause flag. When 1, enter_contest and
+    /// enter_contest_with_token return VaultPaused. Other ops remain
+    /// available so operators can wind down in-flight state.
+    /// u8 instead of bool for Pod safety (zero-copy compatibility).
+    pub paused: u8,                                    //    1
+    /// Payout mint — pinned at `initialize`, immutable thereafter.
+    /// All `settle_contest` / `cancel_contest` / `close_contest` flows
+    /// constrain this. In a mainnet build, must equal EXPECTED_USDC_MINT.
+    pub payout_mint: Pubkey,                           //   32
+    /// Squads vault PDA — pinned at `initialize`. `sweep_operator_revenue`
+    /// enforces `treasury_ata.owner == treasury_authority`, so leaked admin
+    /// keys can't drain swept revenue elsewhere.
+    pub treasury_authority: Pubkey,                    //   32
+    /// On-chain currency registry. Slot 0 holds the payout currency (USDC),
+    /// slot 1 holds USDT, slots 2-15 are populated via `register_currency`.
+    pub accepted_currencies: [AcceptedCurrency; 16],   // 1280
+    /// Reserved padding for forward-compat (governance, fee policy, etc.).
+    pub _reserved: [u8; 64],                           //   64
 }
 
 impl VaultState {
@@ -111,55 +161,52 @@ impl VaultState {
     }
 }
 
-/// One per user wallet. Holds the user's vault balance plus lifetime
-/// accounting and v0.15.0's daily-withdraw circuit breaker.
+/// One per user wallet. Holds on-chain stat counters (entries / wins /
+/// cashes / total_won) plus the loyalty seeds counter and the user's
+/// chosen display name. v0.16 dropped the custodial balance / deposit /
+/// withdraw / daily-cap fields — funds now live in user ATAs.
 ///
 /// PDA seeds: [b"user", wallet.as_ref()]
 #[account]
 #[derive(InitSpace)]
 pub struct UserAccount {
     /// Owner wallet.
-    pub wallet: Pubkey,
-    /// Current spendable balance, 6-decimal USDC. Credited on deposit and
-    /// on `settle_contest` winnings; debited on withdraw and on
-    /// `enter_contest` (managed-wallet entry fee).
-    pub balance: u64,
-    /// Lifetime cumulative deposits. Audit/UX only — never decremented.
-    pub total_deposited: u64,
-    /// Lifetime cumulative withdrawals. Audit/UX only — never decremented.
-    pub total_withdrawn: u64,
-    /// Lifetime cumulative winnings credited via settle_contest. Audit/UX only.
-    pub total_won: u64,
+    pub wallet: Pubkey,           // 32
+    /// On-chain master copy of the user's display name. UTF-8 zero-padded.
+    pub username: [u8; 32],       // 32
     /// Loyalty points awarded per entry from the contest's Season schedule.
-    /// Rails derives "level" client-side from this value (level = seeds/100 + 1).
-    pub seeds: u64,
-    /// On-chain master copy of the user's display name (v0.14.0). UTF-8,
-    /// zero-padded. Rails mirrors it; only the wallet owner can change via
-    /// `set_username`.
-    pub username: [u8; 32],
-    /// Lamports withdrawn in the current 24h window (v0.15.0). Resets to
-    /// zero when DAILY_WINDOW_SECONDS elapses since daily_window_start.
-    pub daily_withdrawn: u64,
-    /// Unix timestamp of the current window's start (v0.15.0). Zero on
-    /// fresh accounts — the first withdraw initializes it.
-    pub daily_window_start: i64,
+    /// Rails derives "level" client-side from this value.
+    pub seeds: u64,               //  8
+    /// Lifetime contests entered. Increments on every successful entry.
+    pub entries: u32,             //  4
+    /// Lifetime 1st-place finishes (rank == 1 in settle_contest).
+    pub wins: u32,                //  4
+    /// Lifetime any-payout finishes (payout > 0 in settle_contest).
+    pub cashes: u32,              //  4
+    /// Lifetime USDC payouts received. Increments by `payout` on settle.
+    pub total_won: u64,           //  8
     /// PDA bump.
-    pub bump: u8,
+    pub bump: u8,                 //  1
+    /// Reserved padding for forward-compat (referral, kyc tier, etc.).
+    pub _reserved: [u8; 32],      // 32
 }
 
 /// Lifecycle of a Contest.
-///   Open    — accepting entries
-///   Locked  — entries closed, awaiting results (no instruction sets this yet)
-///   Settled — graded, payouts credited
+///   Open      — accepting entries
+///   Locked    — entries closed, awaiting results (set by lock_contest)
+///   Settled   — graded, payouts disbursed
+///   Cancelled — refunded to creator, no further state transitions allowed
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
 pub enum ContestStatus {
     Open,
     Locked,
     Settled,
+    Cancelled,
 }
 
-/// One per contest. Holds entry-fee schedule, payout tiers, accumulated
-/// fees, status, and the season the contest is bound to.
+/// One per contest. Holds the per-currency entry-fee schedule, accumulated
+/// per-currency fee tallies (operator revenue, separate from prize pool),
+/// payout tiers, status, season binding, and the creator/admin pubkeys.
 ///
 /// PDA seeds: [b"contest", contest_id]  (contest_id = SHA256 of Rails slug)
 #[account]
@@ -167,32 +214,33 @@ pub enum ContestStatus {
 pub struct Contest {
     /// SHA256(Rails slug). Stable, opaque, 32 bytes.
     pub contest_id: [u8; 32],
-    /// Guaranteed prize amount the creator pre-funds at create time.
-    pub prizes: u64,
-    /// Entry fee per entry, 6-decimal USDC.
-    pub entry_fee: u64,
-    /// Total entry fees collected so far. Increments on every paid entry.
-    /// Settlement is capped at `entry_fees + prizes`.
-    pub entry_fees: u64,
+    /// Payer pubkey from create_contest (admin bot, pays SOL rent).
+    pub admin: Pubkey,
+    /// Creator pubkey (signs the prize_pool USDC transfer from their ATA).
+    pub creator: Pubkey,
+    /// Season this contest is bound to (OPSEC-023). Pins the seed schedule.
+    pub season_id: u32,
+    /// USDC prize pool — pre-funded by creator at create time. Immutable.
+    pub prize_pool: u64,
+    /// Per-currency entry-fee schedule. `entry_fee_by_currency[i] = 0`
+    /// means currency `i` is NOT accepted for this contest.
+    pub entry_fee_by_currency: [u64; MAX_CURRENCIES],
+    /// Per-currency collected fees (operator revenue). Increments by the
+    /// fee on every paid entry of currency `i`.
+    pub entry_fees: [u64; MAX_CURRENCIES],
     /// Maximum number of entries this contest accepts.
     pub max_entries: u32,
     /// Number of entries currently in the contest.
     pub current_entries: u32,
     /// Current lifecycle state.
     pub status: ContestStatus,
-    /// USDC paid per rank, 6-decimal. Must sum to `prizes` (validated at
-    /// create_contest). Max 10 ranks.
+    /// USDC paid per rank, 6-decimal. Must sum to `prize_pool`. Max 10 ranks.
     #[max_len(10)]
     pub payout_amounts: Vec<u64>,
-    /// Payer pubkey from create_contest (admin bot, pays SOL rent).
-    pub admin: Pubkey,
-    /// Creator pubkey (signs the prizes USDC transfer from their ATA).
-    pub creator: Pubkey,
-    /// Season this contest is bound to (OPSEC-023). Pins the seed schedule
-    /// so a caller can't substitute a richer-reward season at entry time.
-    pub season_id: u32,
     /// PDA bump.
     pub bump: u8,
+    /// Reserved padding for forward-compat.
+    pub _reserved: [u8; 32],
 }
 
 /// Status of a single contest entry. Settle transitions Active → Won/Lost.
@@ -210,13 +258,18 @@ pub enum EntryStatus {
 #[account]
 #[derive(InitSpace)]
 pub struct ContestEntry {
-    pub contest_id: [u8; 32],
-    pub wallet: Pubkey,
-    pub entry_num: u32,
-    pub status: EntryStatus,
-    pub rank: u32,
-    pub payout: u64,
-    pub bump: u8,
+    pub contest_id: [u8; 32],     // 32
+    pub wallet: Pubkey,           // 32
+    pub entry_num: u32,           //  4
+    pub status: EntryStatus,      //  1
+    pub rank: u32,                //  4
+    pub payout: u64,              //  8
+    /// Index into `vault_state.accepted_currencies` of the currency this
+    /// entry was paid in. `u8::MAX` is the sentinel for token-funded entries
+    /// (no SPL transfer occurred).
+    pub currency_idx: u8,         //  1
+    pub bump: u8,                 //  1
+    pub _reserved: [u8; 16],      // 16
 }
 
 /// Source enum for an EntryTokenAccount — how the user obtained the token.

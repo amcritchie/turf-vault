@@ -1,21 +1,25 @@
 //! TurfVault — Solana escrow program for Turf Monster contests.
 //!
-//! High-level model:
-//!   - **VaultState** is the singleton holding signers, mints, and a
-//!     pause flag.
-//!   - **UserAccount** is per-wallet — holds balance, lifetime accounting,
-//!     loyalty seeds, and a daily withdraw circuit-breaker.
-//!   - **Contest** holds entry fee, prize pool, and payout tiers; bound
-//!     to one **Season** (seed schedule).
+//! v0.16 server-signed self-custody model (NOT custodial-balance):
+//!   - **VaultState** is the singleton holding signers, payout mint pin,
+//!     treasury authority pin, the on-chain currency registry, and a pause flag.
+//!   - **UserAccount** is per-wallet — holds on-chain stat counters
+//!     (entries, wins, cashes, total_won), loyalty seeds, and username.
+//!     Funds live in user ATAs, NOT in the vault.
+//!   - **Contest** holds the per-currency entry-fee schedule, a USDC
+//!     prize pool (held in a per-contest [b"prize_pool", contest_id] ATA),
+//!     payout tiers, and is bound to one **Season** (seed schedule).
 //!   - **ContestEntry** is per (contest × wallet × entry_num).
 //!   - **EntryTokenAccount** is a pre-purchased free-entry voucher.
 //!
 //! Auth model:
-//!   - **1-of-3 vault signer**: routine ops (create_contest, mint_entry_token,
-//!     facilitate entries).
-//!   - **2-of-3 vault signers**: treasury ops (settle_contest, force_close_vault,
-//!     update_signers, pause, unpause).
-//!   - **User signature**: deposit, withdraw, direct entries, set_username.
+//!   - **1-of-3 vault signer**: routine ops (create_contest, lock_contest,
+//!     close_contest, mint_entry_token, facilitate entries).
+//!   - **2-of-3 vault signers**: treasury ops (register_currency,
+//!     deactivate_currency, settle_contest, unlock_contest, cancel_contest,
+//!     sweep_operator_revenue, pause, unpause).
+//!   - **User signature**: enter_contest{,_with_token}, set_username,
+//!     create_contest (as creator funding the prize pool).
 //!   - **INIT_AUTHORITY constant** (Alex Phantom key): one-time `initialize` call.
 //!
 //! For each instruction's full contract, see its file under `instructions/`.
@@ -28,42 +32,49 @@ pub mod instructions;
 
 use instructions::*;
 
-declare_id!("Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT");
+declare_id!("EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ");
 
 #[program]
 pub mod turf_vault {
     use super::*;
 
-    // ── Vault setup & governance ──────────────────────────────────────────
+    // ── Vault setup ───────────────────────────────────────────────────────
 
-    /// One-time setup of the singleton vault. Only callable by INIT_AUTHORITY
-    /// with the canonical USDC + USDT mints for this build.
-    pub fn initialize(ctx: Context<Initialize>, signers: [Pubkey; 3], threshold: u8) -> Result<()> {
-        handle_initialize(ctx, signers, threshold)
-    }
-
-    /// Close the existing VaultState account to enable a schema migration.
-    /// Requires 2-of-3. Only succeeds if the on-chain data is at a DIFFERENT
-    /// size than the current schema (won't brick a healthy vault).
-    pub fn force_close_vault(ctx: Context<ForceCloseVault>) -> Result<()> {
-        handle_force_close_vault(ctx)
-    }
-
-    /// Rotate the multisig signer set or change the threshold. 2-of-3
-    /// required; at least one of the two cosigners must remain in the new
-    /// set (OPSEC-027 continuity).
-    pub fn update_signers(
-        ctx: Context<UpdateSigners>,
-        new_signers: [Pubkey; 3],
-        new_threshold: u8,
+    /// One-time setup of the singleton vault. Pins payout mint to USDC,
+    /// registers slot 0 (USDC) + slot 1 (USDT) in the currency registry,
+    /// stores the Squads vault PDA as treasury authority, and locks in the
+    /// multisig signer set + threshold. Only callable by INIT_AUTHORITY
+    /// on a mainnet build.
+    pub fn initialize(
+        ctx: Context<Initialize>,
+        signers: [Pubkey; 3],
+        threshold: u8,
+        treasury_authority: Pubkey,
     ) -> Result<()> {
-        handle_update_signers(ctx, new_signers, new_threshold)
+        handle_initialize(ctx, signers, threshold, treasury_authority)
     }
 
-    // ── Pause control (v0.15.0) ───────────────────────────────────────────
+    // ── Currency registry ─────────────────────────────────────────────────
 
-    /// Emergency stop: blocks deposit / withdraw / enter_contest*. 2-of-3.
-    /// `reason` is logged on-chain (UTF-8 zero-padded to 64 bytes).
+    /// Add a currency to `accepted_currencies` at the first empty slot.
+    /// Creates the per-currency operator-revenue ATA. 2-of-3.
+    pub fn register_currency(ctx: Context<RegisterCurrency>, kind: u8) -> Result<()> {
+        handle_register_currency(ctx, kind)
+    }
+
+    /// Flip `accepted_currencies[idx].active = 0`. The slot is never
+    /// reclaimed — preserves currency_idx stability. 2-of-3.
+    pub fn deactivate_currency(
+        ctx: Context<DeactivateCurrency>,
+        currency_idx: u8,
+    ) -> Result<()> {
+        handle_deactivate_currency(ctx, currency_idx)
+    }
+
+    // ── Pause control ─────────────────────────────────────────────────────
+
+    /// Emergency stop: blocks enter_contest{,_with_token}. 2-of-3. `reason`
+    /// is logged on-chain (UTF-8 zero-padded to 64 bytes).
     pub fn pause(ctx: Context<PauseVault>, reason: [u8; 64]) -> Result<()> {
         handle_pause(ctx, reason)
     }
@@ -75,9 +86,7 @@ pub mod turf_vault {
 
     // ── User accounts ─────────────────────────────────────────────────────
 
-    /// Create a new per-wallet UserAccount PDA. Permissionless payer (any
-    /// wallet can pay rent for any user's account); the username is set at
-    /// creation time and can later be changed via `set_username`.
+    /// Create a new per-wallet UserAccount PDA. Permissionless payer.
     pub fn create_user_account(
         ctx: Context<CreateUserAccount>,
         wallet: Pubkey,
@@ -86,25 +95,9 @@ pub mod turf_vault {
         handle_create_user_account(ctx, wallet, username)
     }
 
-    /// Set / overwrite the username on a UserAccount. Signed by the
-    /// account owner — no admin involvement.
+    /// Set / overwrite the username on a UserAccount. Owner signs.
     pub fn set_username(ctx: Context<SetUsername>, username: [u8; 32]) -> Result<()> {
         handle_set_username(ctx, username)
-    }
-
-    // ── Funds in / out ────────────────────────────────────────────────────
-
-    /// User → vault SPL token transfer. Credits UserAccount.balance.
-    /// Blocked when vault is paused.
-    pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
-        handle_deposit(ctx, amount)
-    }
-
-    /// Vault → user SPL token transfer. Debits UserAccount.balance.
-    /// Capped at $100 per rolling 24h window per user (v0.15.0).
-    /// Blocked when vault is paused.
-    pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
-        handle_withdraw(ctx, amount)
     }
 
     // ── Seasons ───────────────────────────────────────────────────────────
@@ -123,59 +116,77 @@ pub mod turf_vault {
 
     // ── Contest lifecycle ─────────────────────────────────────────────────
 
-    /// Create a new contest. Dual-signer: payer (admin bot, pays SOL rent) +
-    /// creator (Phantom wallet, signs prize-pool USDC transfer from their ATA).
+    /// Create a new contest with a per-currency entry-fee schedule and a
+    /// USDC prize pool. Dual-signer: payer (admin bot, pays SOL rent) +
+    /// creator (Phantom wallet, signs prize-pool USDC transfer).
     pub fn create_contest(
         ctx: Context<CreateContest>,
         contest_id: [u8; 32],
         season_id: u32,
-        entry_fee: u64,
+        entry_fee_by_currency: [u64; 16],
         max_entries: u32,
         payout_amounts: Vec<u64>,
-        prizes: u64,
+        prize_pool: u64,
     ) -> Result<()> {
         handle_create_contest(
             ctx,
             contest_id,
             season_id,
-            entry_fee,
+            entry_fee_by_currency,
             max_entries,
             payout_amounts,
-            prizes,
+            prize_pool,
         )
     }
 
-    /// Grade a contest: assign ranks + credit payouts to winners' UserAccounts.
-    /// 2-of-3 (admin + cosigner). Uses remaining_accounts for variable-length
-    /// settlement arrays. Cap: total payouts ≤ entry_fees + prizes.
-    pub fn settle_contest(ctx: Context<SettleContest>, settlements: Vec<Settlement>) -> Result<()> {
+    /// Flip Contest.status: Open → Locked. 1-of-3.
+    pub fn lock_contest(ctx: Context<LockContest>) -> Result<()> {
+        handle_lock_contest(ctx)
+    }
+
+    /// Flip Contest.status: Locked → Open. 2-of-3 (safety hatch).
+    pub fn unlock_contest(ctx: Context<UnlockContest>) -> Result<()> {
+        handle_unlock_contest(ctx)
+    }
+
+    /// Grade a contest. Per-winner SPL transfer from the contest's USDC
+    /// prize-pool PDA → winner's USDC ATA. 2-of-3.
+    pub fn settle_contest<'info>(
+        ctx: Context<'_, '_, '_, 'info, SettleContest<'info>>,
+        settlements: Vec<Settlement>,
+    ) -> Result<()> {
         handle_settle_contest(ctx, settlements)
     }
 
-    /// Close a settled contest's account, reclaiming rent to the admin.
-    /// 1-of-3 vault signer.
+    /// Refund the prize pool to the creator. Open / Locked → Cancelled. 2-of-3.
+    pub fn cancel_contest(ctx: Context<CancelContest>) -> Result<()> {
+        handle_cancel_contest(ctx)
+    }
+
+    /// Close a settled or cancelled contest's PDA + prize_pool ATA,
+    /// reclaiming rent to the admin. Sweeps residual prize_pool dust to
+    /// the operator-revenue USDC ATA first (decided 2026-05-27, §11 Q8).
+    /// 1-of-3.
     pub fn close_contest(ctx: Context<CloseContest>) -> Result<()> {
         handle_close_contest(ctx)
     }
 
     // ── Entries ───────────────────────────────────────────────────────────
 
-    /// Managed-wallet entry: debits UserAccount.balance for the entry fee
-    /// and creates the ContestEntry. 1-of-3 vault signer pays rent.
+    /// Generic single-canonical entry handler. User signs an SPL transfer
+    /// from their ATA → the chosen currency's operator-revenue ATA. Creates
+    /// a ContestEntry PDA, awards seeds, increments stat counters.
     /// Blocked when vault is paused.
-    pub fn enter_contest(ctx: Context<EnterContest>, entry_num: u32) -> Result<()> {
-        handle_enter_contest(ctx, entry_num)
+    pub fn enter_contest(
+        ctx: Context<EnterContest>,
+        entry_num: u32,
+        currency_idx: u8,
+    ) -> Result<()> {
+        handle_enter_contest(ctx, entry_num, currency_idx)
     }
 
-    /// Phantom-wallet entry: user signs an SPL transfer from their ATA →
-    /// vault USDC PDA. Admin pays SOL rent. Blocked when vault is paused.
-    pub fn enter_contest_direct(ctx: Context<EnterContestDirect>, entry_num: u32) -> Result<()> {
-        handle_enter_contest_direct(ctx, entry_num)
-    }
-
-    /// Managed-wallet entry funded by consuming an EntryTokenAccount
-    /// (no USDC charged). Wallet must co-sign to consent (OPSEC-004).
-    /// Blocked when vault is paused.
+    /// Entry funded by consuming an EntryTokenAccount instead of paying
+    /// any currency. Wallet co-signs (OPSEC-004). Blocked when vault is paused.
     pub fn enter_contest_with_token(
         ctx: Context<EnterContestWithToken>,
         entry_num: u32,
@@ -183,20 +194,9 @@ pub mod turf_vault {
         handle_enter_contest_with_token(ctx, entry_num)
     }
 
-    /// Phantom-wallet entry funded by consuming an EntryTokenAccount.
-    /// User signs; admin pays SOL rent. Blocked when vault is paused.
-    pub fn enter_contest_direct_with_token(
-        ctx: Context<EnterContestDirectWithToken>,
-        entry_num: u32,
-    ) -> Result<()> {
-        handle_enter_contest_direct_with_token(ctx, entry_num)
-    }
-
     // ── Free entries ──────────────────────────────────────────────────────
 
     /// Mint a new EntryTokenAccount for a user. 1-of-3 vault signer.
-    /// `sequence` is supplied by the caller to avoid PDA collisions when
-    /// minting multiple tokens per user.
     pub fn mint_entry_token(
         ctx: Context<MintEntryToken>,
         sequence: u64,
@@ -204,5 +204,16 @@ pub mod turf_vault {
         source_ref: [u8; 64],
     ) -> Result<()> {
         handle_mint_entry_token(ctx, sequence, source, source_ref)
+    }
+
+    // ── Treasury ──────────────────────────────────────────────────────────
+
+    /// Drain a per-currency operator-revenue ATA to the pinned treasury
+    /// wallet's ATA. `amount = 0` sweeps all. 2-of-3.
+    pub fn sweep_operator_revenue(
+        ctx: Context<SweepOperatorRevenue>,
+        amount: u64,
+    ) -> Result<()> {
+        handle_sweep_operator_revenue(ctx, amount)
     }
 }

@@ -14,6 +14,8 @@ use crate::errors::VaultError;
 /// `season_id` is rejected by Anchor's `init` constraint.
 ///
 /// Auth: 1-of-3 vault signer.
+///
+/// VaultState is zero-copy (v0.16) — load()? for the signer check.
 #[derive(Accounts)]
 #[instruction(season_id: u32)]
 pub struct CreateSeason<'info> {
@@ -23,10 +25,10 @@ pub struct CreateSeason<'info> {
 
     #[account(
         seeds = [b"vault"],
-        bump = vault_state.bump,
-        constraint = vault_state.is_signer(&admin.key()) @ VaultError::Unauthorized,
+        bump = vault_state.load()?.bump,
+        constraint = vault_state.load()?.is_signer(&admin.key()) @ VaultError::Unauthorized,
     )]
-    pub vault_state: Account<'info, VaultState>,
+    pub vault_state: AccountLoader<'info, VaultState>,
 
     #[account(
         init,

@@ -6,10 +6,9 @@ use crate::errors::VaultError;
 /// for a user.
 ///
 /// The recipient (user) later consumes one of these via
-/// enter_contest_with_token / enter_contest_direct_with_token to enter a
-/// contest without paying the USDC entry fee at entry time. Typical
-/// triggers: a Stripe purchase (TokenPurchaseJob), an operator gift
-/// (admin UI), a level-up reward.
+/// enter_contest_with_token to enter a contest without paying the USDC
+/// entry fee at entry time. Typical triggers: a Stripe purchase
+/// (TokenPurchaseJob), an operator gift (admin UI), a level-up reward.
 ///
 /// PDA seeds: [b"entry_token", user_wallet, sequence_le_bytes]. `sequence`
 /// is supplied by the caller (Rails picks `current_count` for the user)
@@ -22,6 +21,8 @@ use crate::errors::VaultError;
 ///
 /// NOT gated by vault pause — operators must be able to fulfill Stripe
 /// purchases that completed before the pause.
+///
+/// VaultState is zero-copy (v0.16) — load()? for the signer check.
 #[derive(Accounts)]
 #[instruction(sequence: u64)]
 pub struct MintEntryToken<'info> {
@@ -31,10 +32,10 @@ pub struct MintEntryToken<'info> {
 
     #[account(
         seeds = [b"vault"],
-        bump = vault_state.bump,
-        constraint = vault_state.is_signer(&admin.key()) @ VaultError::Unauthorized,
+        bump = vault_state.load()?.bump,
+        constraint = vault_state.load()?.is_signer(&admin.key()) @ VaultError::Unauthorized,
     )]
-    pub vault_state: Account<'info, VaultState>,
+    pub vault_state: AccountLoader<'info, VaultState>,
 
     /// CHECK: The recipient wallet. Used only as a PDA seed and to set
     /// `owner` on the new account. Not a signer; not modified.

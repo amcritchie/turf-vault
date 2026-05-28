@@ -4,8 +4,8 @@ use crate::instructions::set_username::validate_username;
 
 /// `create_user_account` — first-touch onboarding for a wallet.
 ///
-/// Allocates a UserAccount PDA at the v0.15.0 layout. All counters start
-/// at zero. The username is set at creation time (per-byte zero-padded);
+/// Allocates a UserAccount PDA at the v0.16 layout. All counters start at
+/// zero. The username is set at creation time (per-byte zero-padded);
 /// owner can change it later via `set_username`.
 ///
 /// Permissionless payer: anyone can pay SOL rent for any wallet's account
@@ -35,27 +35,21 @@ pub fn handle_create_user_account(
     wallet: Pubkey,
     username: [u8; 32],
 ) -> Result<()> {
-    // Prelaunch audit C2 (2026-05-24): on-chain username validity bar.
-    // create_user_account is permissionless on the payer side (MEDIUM-2 in
-    // the audit) — anyone can pre-create another wallet's account. Without
-    // this check, an attacker could front-run a signup and set username =
-    // "admin" or any reserved/brand handle. Same rules as set_username.
+    // Prelaunch audit C2: on-chain username validity bar. Reserved-prefix
+    // and printable-ASCII gate so an attacker front-running a signup can't
+    // claim "admin" or inject control chars.
     validate_username(&username)?;
 
     let user = &mut ctx.accounts.user_account;
     user.wallet = wallet;
-    user.balance = 0;
-    user.total_deposited = 0;
-    user.total_withdrawn = 0;
-    user.total_won = 0;
-    user.seeds = 0;
     user.username = username;
-    // v0.15.0 daily-cap fields. daily_window_start = 0 means "no window
-    // yet" — the first withdraw will see >24h elapsed since the epoch
-    // and initialize the window correctly.
-    user.daily_withdrawn = 0;
-    user.daily_window_start = 0;
+    user.seeds = 0;
+    user.entries = 0;
+    user.wins = 0;
+    user.cashes = 0;
+    user.total_won = 0;
     user.bump = ctx.bumps.user_account;
+    user._reserved = [0; 32];
 
     msg!("User account created for: {}", wallet);
     Ok(())
