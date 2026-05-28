@@ -1,7 +1,7 @@
 {
-  "_comment": "OPSEC-002: turf-vault's program upgrade authority is a Squads V4 2-of-3 multisig as of 2026-05-19 (devnet). anchor deploy no longer works — upgrades go through scripts/squad-upgrade.js.",
+  "_comment": "OPSEC-002: turf-vault's program upgrade authority is a Squads V4 2-of-3 multisig as of 2026-05-19 (devnet). anchor deploy no longer works \u2014 upgrades go through scripts/squad-upgrade.js.",
   "network": "devnet",
-  "programId": "Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT",
+  "programId": "EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ",
   "multisigPda": "7nRuVw3VZFC6z85tYVDitPnaUHZCkqLpJRSTBNtPmtZB",
   "vaultPda": "BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC",
   "threshold": 2,
@@ -9,5 +9,7 @@
     "alex_bot": "F6f8h5yynbnkgWvU5abQx3RJxJpe8EoQmeFBuNKdKzhZ",
     "alex": "7ZDJp7FUHhuceAqcW9CHe81hCiaMTjgWAXfprBM59Tcr",
     "mason": "CytJS23p1zCM2wvUUngiDePtbMB484ebD7bK4nDqWjrR"
-  }
+  },
+  "_v016_redeploy": "redeployed to fresh program ID 2026-05-27; old Dx8u\u2026 orphaned",
+  "_v016_redeploy_2": "devnet redeploy #2 on 2026-05-27 \u2014 Season 1 canonical schedule"
 }
