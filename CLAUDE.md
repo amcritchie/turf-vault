@@ -4,41 +4,58 @@
 
 Anchor smart contract for contest escrow on Solana. Backend for Turf Monster (Rails pick'em app).
 
-- **Program ID**: `Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT`
+- **Program ID (devnet)**: `EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ` — fresh deploy 2026-05-27 (the prior `Dx8u…GaCT` is orphaned with ~4 SOL ProgramData rent locked under Squads authority).
 - **Framework**: Anchor 0.32.1
 - **Rust**: 1.89.0 (via `rust-toolchain.toml`)
 - **Network**: Localnet (dev), Devnet (staging)
-- **Version**: 0.15.0
-- **Upgrade authority**: Squads V4 2-of-3 multisig (OPSEC-002 — see "Deploying an upgrade" below). `anchor deploy` no longer works.
+- **Version**: 0.16.0
+- **Binary**: 495,280 bytes / 3.448 SOL permanent rent
+- **Upgrade authority**: Squads V4 2-of-3 multisig PDA `BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC` (OPSEC-002 — see "Deploying an upgrade" below). `anchor deploy` no longer works for upgrades; the first deploy of a fresh program ID still uses `solana program deploy` from Alex Bot, then `set-upgrade-authority` to the Squads vault.
+
+### v0.16 architectural shift (vs v0.15.x)
+
+- **Custodial vault balance is gone.** USDC + USDT live in each user's own ATA — server-signed self-custody for managed-wallet users (Rails holds the encrypted keypair), real self-custody for Phantom users. No more `deposit` / `withdraw` instructions; no more `UserAccount.balance` field.
+- **Currency registry on `VaultState`.** `accepted_currencies: [AcceptedCurrency; 16]` is the on-chain source of truth for which mints are accepted as entry fees. USDC at slot 0 (also `payout_mint`), USDT at slot 1, slots 2-15 populated via the `register_currency` 2-of-3 instruction. Adding a new currency = data update, no contract upgrade.
+- **`VaultState` is zero-copy.** Borsh's `deserialize_reader` for a 1.5 KB struct exceeds BPF's 4 KB stack frame; `#[account(zero_copy(unsafe))]` + `#[repr(C)]` maps the bytes directly via `bytemuck::Pod`. `paused: u8` and `AcceptedCurrency.active: u8` instead of bool for Pod safety.
+- **Prize pool decoupled from entry fees.** `Contest.prize_pool` is creator-funded at create time (USDC, immutable). Entry fees flow to per-currency operator-revenue PDAs (`[b"op_rev", mint]`). Settlement cap is `total_payouts ≤ prize_pool`; entry fees are operator margin.
+- **`UserAccount` carries lifetime stat counters** — `entries`, `wins` (rank == 1), `cashes` (rank > 0), `total_won`, plus `seeds` and `username`. No financial state.
 
 ## File Layout
 
 ```
 programs/turf_vault/src/
-├── lib.rs              # Program entry — 16 instruction handlers (thin wrappers)
+├── lib.rs              # Program entry — 18 thin wrappers (16 + pause/unpause)
 ├── state.rs            # 6 account structs + 2 enums + multisig helpers
-├── errors.rs           # 18 error codes (VaultError enum)
+├── errors.rs           # 6000-6033 (some retired-but-kept for numbering stability)
 └── instructions/
-    ├── mod.rs           # Re-exports all instruction modules
-    ├── initialize.rs    # Vault setup, accepts signers[3] + threshold
-    ├── create_user_account.rs
-    ├── deposit.rs       # User → vault token transfer via CPI
-    ├── withdraw.rs      # Vault → user token transfer via PDA signer
-    ├── create_contest.rs
-    ├── enter_contest.rs # Debit PDA balance, collect entry fee (managed wallets)
-    ├── enter_contest_direct.rs # User signs USDC transfer from wallet ATA (Phantom wallets)
-    ├── enter_contest_with_token.rs # Managed-wallet entry funded by an EntryTokenAccount
-    ├── enter_contest_direct_with_token.rs # Phantom-direct entry funded by an EntryTokenAccount
-    ├── settle_contest.rs # remaining_accounts pattern, requires cosigner (2-of-3)
-    ├── close_contest.rs
-    ├── mint_entry_token.rs # Admin mints a pre-purchased EntryTokenAccount
-    ├── create_season.rs # Create a Season with an immutable seed-award schedule
-    ├── force_close_vault.rs # Migration-only: requires cosigner (2-of-3)
-    └── update_signers.rs # Update multisig signers/threshold (2-of-3)
+    ├── mod.rs                  # Re-exports all instruction modules
+    ├── initialize.rs           # Vault setup + register USDC + USDT in slots 0/1
+    ├── register_currency.rs    # NEW (2-of-3) — add a currency to the registry
+    ├── deactivate_currency.rs  # NEW (2-of-3) — flip a slot's active flag off
+    ├── create_user_account.rs  # PDA per wallet: username + stats + seeds
+    ├── set_username.rs         # Owner signs; v0.15.1 on-chain validation
+    ├── create_season.rs        # Immutable per-entry seed-award schedule
+    ├── create_contest.rs       # entry_fee_by_currency[16] + USDC prize_pool
+    ├── lock_contest.rs         # NEW (1-of-3) — Open → Locked
+    ├── unlock_contest.rs       # NEW (2-of-3) — Locked → Open (safety hatch)
+    ├── enter_contest.rs        # Unified entry (user signs + 1-of-3 payer)
+    ├── enter_contest_with_token.rs # Token-funded entry (wallet co-signs OPSEC-004)
+    ├── settle_contest.rs       # 2-of-3; SPL CPI per winner from prize_pool PDA
+    ├── cancel_contest.rs       # NEW (2-of-3) — refund prize pool to creator
+    ├── close_contest.rs        # 1-of-3; sweeps dust + closes the contest PDA
+    ├── mint_entry_token.rs     # Admin mints a pre-purchased EntryTokenAccount
+    ├── sweep_operator_revenue.rs # NEW (2-of-3) — drain op-rev ATA to treasury
+    └── pause.rs / unpause.rs   # Emergency stop (2-of-3 each)
+docs/
+├── v0.16-spec.md       # Full v0.16 design doc (Jasper-authored, 1,500+ lines)
 tests/
-└── turf_vault.ts       # 44 test cases covering all instructions + multisig
+└── turf_vault.ts       # v0.15.1 test suite — REWRITE PENDING for v0.16 surface
 Anchor.toml             # Program ID, cluster config, test script
+scripts/squad.json      # Squads vault PDAs + member pubkeys
+scripts/squad-upgrade.js # Upgrade flow via Squad (propose → approve x2 → execute)
 ```
+
+Files removed in v0.16: `deposit.rs`, `withdraw.rs`, `enter_contest_direct.rs`, `enter_contest_direct_with_token.rs`, `force_close_vault.rs`, `update_signers.rs`.
 
 ## 2-of-3 Multisig System
 
@@ -63,20 +80,26 @@ pub fn validate_multisig(&self, s1: &Pubkey, s2: &Pubkey) -> bool {
 | 2 | Alex (human) | `7ZDJp7FUHhuceAqcW9CHe81hCiaMTjgWAXfprBM59Tcr` |
 | 3 | Mason | `CytJS23p1zCM2wvUUngiDePtbMB484ebD7bK4nDqWjrR` |
 
-### Authorization by Instruction
+### Authorization by Instruction (v0.16)
 | Instruction | Auth Level | Notes |
 |-------------|-----------|-------|
-| `create_contest` | 1-of-3 | Any signer can create |
-| `create_season` | 1-of-3 | Any signer can create |
-| `close_contest` | 1-of-3 | Any signer can close |
-| `enter_contest` / `enter_contest_direct` | 1-of-3 | Any signer can facilitate entries |
-| `enter_contest_with_token` | 1-of-3 + `wallet` | Payer (1-of-3) plus the token owner `wallet` signs (OPSEC-004) |
-| `enter_contest_direct_with_token` | User signs | User authorizes token consumption; admin pays PDA rent |
-| `mint_entry_token` | 1-of-3 | Any signer can mint a token for any wallet |
-| `set_username` | User signs | Wallet owner signs; v0.15.1 adds on-chain validation (reserved prefixes, ASCII, length floor) |
-| `settle_contest` | **2-of-3** | Requires `admin` + `cosigner` |
-| `force_close_vault` | **2-of-3** | Requires `admin` + `cosigner` |
-| `update_signers` | **2-of-3** | Requires `admin` + `cosigner`; new set must keep ≥1 cosigner (OPSEC-027) |
+| `initialize` | INIT_AUTHORITY | One-time. Mainnet builds pin to Alex's Phantom key as a compile-time constant. |
+| `create_user_account` | Permissionless payer | Anyone can pay rent for any wallet's UserAccount PDA. Username required (≥ 3 chars). |
+| `set_username` | User signs | Wallet owner signs; v0.15.1 on-chain validation (reserved prefixes, ASCII, ≥3 chars). |
+| `create_season` | 1-of-3 | Any signer can create. Seed schedule immutable after create. |
+| `create_contest` | 1-of-3 + creator | Admin pays SOL rent; creator (Phantom or server-keypair) signs the USDC prize-pool transfer. |
+| `lock_contest` | 1-of-3 | Status Open → Locked. |
+| `unlock_contest` | **2-of-3** | Status Locked → Open. Safety hatch — multisig because it re-opens a contest the operator deliberately closed. |
+| `enter_contest` | User + 1-of-3 payer | User signs SPL transfer from their ATA → currency's op-rev ATA. Admin pays SOL rent (OPSEC-024 channel discipline). |
+| `enter_contest_with_token` | User + 1-of-3 payer | Wallet must sign (OPSEC-004) to consent to token consume. |
+| `settle_contest` | **2-of-3** | SPL CPI per winner from `[b"prize_pool", contest_id]` PDA. Rails must set `set_compute_unit_limit(400_000)` — default budget tops out near ~25 winners. |
+| `cancel_contest` | **2-of-3** | Status → Cancelled. Refunds full `prize_pool` to creator. Entry fees stay with operator (treated as revenue); operator-side playbook is to `mint_entry_token` goodwill credits to affected entrants. |
+| `close_contest` | 1-of-3 | Settled or Cancelled contests only. Sweeps any prize_pool dust to op-rev USDC, then closes the contest PDA (rent → admin). |
+| `mint_entry_token` | 1-of-3 | Admin mints free-entry voucher PDAs. Idempotent per `source_ref`. |
+| `register_currency` | **2-of-3** | Add a mint to `accepted_currencies` at the first empty slot. Also creates the per-currency op-rev ATA at `[b"op_rev", mint]`. |
+| `deactivate_currency` | **2-of-3** | Flips `accepted_currencies[idx].active = 0`. Slot is never reclaimed — preserves `currency_idx` stability across the program's life. |
+| `sweep_operator_revenue` | **2-of-3** | Drains a currency's op-rev ATA to `vault_state.treasury_authority` (pinned to the Squads vault PDA at init). |
+| `pause` / `unpause` | **2-of-3** | Emergency stop. Blocks `enter_contest` + `enter_contest_with_token`. Other ops continue. |
 
 ### Co-signing Flow (Treasury Operations)
 1. Server (Alex Bot) builds TX and partially signs as `admin`
@@ -120,19 +143,35 @@ All accounts use `#[derive(InitSpace)]`. Contest has `#[max_len(10)]` on `payout
 ## State Model
 
 ### Enums
-- `ContestStatus`: Open → Locked → Settled
-- `EntryStatus`: Active → Won / Lost
+- `ContestStatus`: Open → Locked → Settled OR Open/Locked → Cancelled (Cancelled is terminal)
+- `EntryStatus`: Active → Won (rank > 0, payout > 0) / Lost
 
-### UserAccount Fields
-- `wallet`, `balance`, `total_deposited`, `total_withdrawn`, `total_won`, `seeds` (u64, awarded per entry from the contest's `Season` seed schedule), `bump`
+### VaultState — zero-copy, `#[account(zero_copy(unsafe))]`, `#[repr(C)]`, 1515 bytes
+- `signers: [Pubkey; 3]`, `threshold: u8`, `bump: u8`, `paused: u8`
+- `payout_mint: Pubkey` (USDC, pinned at init; immutable)
+- `treasury_authority: Pubkey` (Squads vault PDA, pinned at init)
+- `accepted_currencies: [AcceptedCurrency; 16]` (1280 bytes — `{ mint, op_rev_ata, kind, active, _pad: [u8; 14] }` × 16)
+- `_reserved: [u8; 64]` (forward-compat)
+
+### UserAccount Fields (no balance — v0.16 stat counters)
+- `wallet: Pubkey`, `username: [u8; 32]`, `seeds: u64`
+- `entries: u32` (lifetime contests entered), `wins: u32` (rank == 1), `cashes: u32` (rank > 0), `total_won: u64` (lifetime USDC payouts)
+- `bump: u8`, `_reserved: [u8; 32]`
 
 ### Contest Fields
-- `contest_id`, `prizes`, `entry_fee`, `entry_fees`, `max_entries`, `current_entries`, `status`, `payout_amounts` (Vec, max 10), `admin` (payer pubkey), `creator` (prizes funder pubkey), `season_id` (u32, OPSEC-023 — season this contest is bound to), `bump`
+- `contest_id: [u8; 32]`, `admin: Pubkey`, `creator: Pubkey`, `season_id: u32`
+- `prize_pool: u64` (USDC, immutable after create)
+- `entry_fee_by_currency: [u64; 16]` (parallel to vault_state.accepted_currencies)
+- `entry_fees: [u64; 16]` (collected fees per currency — informational, NOT used for settlement cap)
+- `max_entries: u32`, `current_entries: u32`, `status: ContestStatus`
+- `payout_amounts: Vec<u64>` (max 10 ranks; sum must equal `prize_pool`)
+- `bump: u8`, `_reserved: [u8; 32]`
 
 ### Key Constraints
 - All token amounts: `u64` with 6 decimals (1 USDC = 1_000_000)
-- `payout_amounts` sum must equal `prizes` (validated in create_contest)
-- Settlement total payouts must be ≤ entry_fees + prizes
+- `payout_amounts.sum() == prize_pool` (validated in `create_contest`)
+- `create_contest` rejects when ALL `entry_fee_by_currency` slots are zero AND `prize_pool == 0` (FeeAndPrizeBothZero)
+- Settlement total payouts must be `≤ prize_pool` (NOT entry_fees — they're operator revenue now)
 - All arithmetic uses `checked_add`/`checked_sub`
 
 ## Error Codes
@@ -158,10 +197,21 @@ All accounts use `#[derive(InitSpace)]`. Contest has `#[max_len(10)]` on `payout
 | 6016 | EntryTokenWrongOwner | Entry token owner ≠ the wallet entering |
 | 6017 | SignerContinuityRequired | `update_signers` drops all current cosigners |
 | 6018 | VaultPaused | Funds-touching op called while vault is paused (v0.15.0) |
-| 6019 | WithdrawDailyCapExceeded | Withdraw would exceed $100 / rolling 24h per-user cap (v0.15.0) |
+| 6019 | WithdrawDailyCapExceeded | RETIRED in v0.16 (no withdraw instruction); slot kept for numbering stability |
 | 6020 | UsernameReserved | Username uses a reserved prefix — admin, system, turf, vault, support, etc. (v0.15.1, audit C2) |
 | 6021 | UsernameInvalidChars | Username has bytes outside printable ASCII 0x20..0x7E (v0.15.1, audit C2) |
 | 6022 | UsernameTooShort | Username has fewer than 3 non-null bytes (v0.15.1, audit C2) |
+| 6023 | CurrencyAlreadyRegistered | `register_currency` called for a mint that's already in the registry |
+| 6024 | CurrencyRegistryFull | All 16 slots in `accepted_currencies` are populated |
+| 6025 | InvalidCurrencyIndex | `currency_idx` is ≥ 16 OR points to an empty (mint == default) slot |
+| 6026 | CurrencyNotActive | Slot is registered but `active == 0` |
+| 6027 | EntryFeeNotSet | `contest.entry_fee_by_currency[currency_idx] == 0` |
+| 6028 | ContestNotLocked | `unlock_contest` called against an Open or Settled contest |
+| 6029 | ContestNotCancellable | `cancel_contest` called against a Settled or already-Cancelled contest |
+| 6030 | PrizePoolNotEmpty | `close_contest` finds residual USDC in the prize pool (should be unreachable — close_contest sweeps dust first) |
+| 6031 | EmptyRevenueAccount | `sweep_operator_revenue` called against an empty op-rev ATA |
+| 6032 | TreasuryAuthorityMismatch | `sweep_operator_revenue` destination ATA owner ≠ `vault_state.treasury_authority` |
+| 6033 | FeeAndPrizeBothZero | `create_contest` with `prize_pool == 0` AND all `entry_fee_by_currency` slots zero |
 
 ## Testing
 
@@ -170,7 +220,7 @@ All accounts use `#[derive(InitSpace)]`. Contest has `#[max_len(10)]` on `payout
 anchor test
 ```
 
-44 tests covering: initialize (with 3 signers + threshold), create_user_account, deposit (USDC/USDT + invalid mint), create_contest (admin with prizes USDC transfer + non-admin rejection + overflowing payout_amounts), enter_contest (2 users + insufficient balance), settle_contest (payouts with cosigner + already-settled + non-admin + same-signer-twice + non-signer-cosigner + duplicate (wallet, entry_num)), withdraw (success + insufficient balance), close_contest (settled + unsettled), any signer can create contest, update_signers (valid + invalid threshold + dropping all cosigners), mint_entry_token, the entry-token entry variants, and create_season + the seed-schedule award tests. Tests use SOL transfers from admin instead of `requestAirdrop` (broken in Solana v3.1).
+**The v0.15.1 test suite at `tests/turf_vault.ts` will NOT pass against v0.16** — it references `deposit`, `withdraw`, `enter_contest_direct`, etc. that no longer exist, and the account layouts changed. A v0.16 rewrite is pending. Until then, run `cargo check` and `anchor idl build` for static verification; functional coverage lives in turf-monster's Rails + Playwright suites (which DO target v0.16's surface).
 
 ### Test Setup Pattern
 ```typescript
@@ -192,6 +242,7 @@ expect(vault.threshold).to.equal(2);
 - **Anchor CLI**: 0.32.1 — `/Users/alex/.cargo/bin/anchor`
 - **Solana CLI**: `/Users/alex/.local/share/solana/install/active_release/bin/solana`
 - **Node.js + Yarn**: Required for TypeScript tests
+- **Helius RPC** (or equivalent paid endpoint) for any non-trivial dev work. Public `api.devnet.solana.com` rate-limits `getProgramAccounts` aggressively (~1 req/sec/IP) which breaks `Solana::Vault.list_entry_tokens` and `solana program show`. Set `SOLANA_RPC_URL=https://devnet.helius-rpc.com/?api-key=...` in your shell or in the consuming app's `.env`. Helius URLs live in 1Password at `agent.helius` (Devnet + Mainnet on the same key).
 
 ## Build & Deploy
 
