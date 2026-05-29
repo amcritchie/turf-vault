@@ -88,4 +88,6 @@ pub enum VaultError {
     FeeAndPrizeBothZero,                         // 6033
     #[msg("Contest is locked — the lock timestamp has passed")]
     ContestLocked,                               // 6034
+    #[msg("Contest has concluded — the conclusion timestamp has passed")]
+    ContestConcluded,                            // 6035
 }

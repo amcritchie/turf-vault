@@ -40,15 +40,20 @@ pub fn handle_set_contest_lock_time(
     new_lock_timestamp: i64,
 ) -> Result<()> {
     let contest = &mut ctx.accounts.contest;
-    // Interim "not concluded" guard. A second on-chain conclusion timestamp is
-    // coming later in the flow; until then Settled/Cancelled is the proxy for
-    // "this contest is done — its lock time should no longer change."
-    // TODO: gate on concluded_at timestamp once it exists.
+    // The lock time is final once the contest is settled/cancelled OR has
+    // concluded (its conclusion_timestamp has passed) — see
+    // set_contest_conclusion_time (v0.18).
     require!(
         contest.status != ContestStatus::Settled
             && contest.status != ContestStatus::Cancelled,
         VaultError::ContestAlreadySettled
     );
+    if contest.conclusion_timestamp != 0 {
+        require!(
+            Clock::get()?.unix_timestamp < contest.conclusion_timestamp,
+            VaultError::ContestConcluded
+        );
+    }
     contest.lock_timestamp = new_lock_timestamp;
     msg!(
         "Contest lock_timestamp set to {} for contest_id={:?}",

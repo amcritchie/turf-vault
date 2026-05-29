@@ -249,8 +249,15 @@ pub struct Contest {
     /// `INIT_SPACE` is UNCHANGED — existing Contest PDAs need no re-init:
     /// their zeroed reserved bytes decode as `lock_timestamp == 0`.
     pub lock_timestamp: i64,
+    /// Derived conclusion marker (Unix seconds, chain Clock). `now >=
+    /// conclusion_timestamp` ⇒ the contest has concluded: its lock time can no
+    /// longer change (`set_contest_lock_time` rejects). `0` = no conclusion
+    /// scheduled. Carved out of `_reserved` (32 → 24 → 16) so total
+    /// `INIT_SPACE` stays UNCHANGED — v0.17 Contest PDAs need no re-init
+    /// (their zeroed bytes decode as `conclusion_timestamp == 0`).
+    pub conclusion_timestamp: i64,
     /// Reserved padding for forward-compat.
-    pub _reserved: [u8; 24],
+    pub _reserved: [u8; 16],
 }
 
 /// Status of a single contest entry. Settle transitions Active → Won/Lost.

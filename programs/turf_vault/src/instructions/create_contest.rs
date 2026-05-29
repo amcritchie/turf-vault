@@ -148,7 +148,9 @@ pub fn handle_create_contest(
     // 0 = no lock scheduled; a non-zero value gates entries once chain time
     // passes it (see enter_contest / enter_contest_with_token).
     contest.lock_timestamp = lock_timestamp;
-    contest._reserved = [0; 24];
+    // Conclusion is set later via set_contest_conclusion_time (0 = none yet).
+    contest.conclusion_timestamp = 0;
+    contest._reserved = [0; 16];
 
     // Fund the prize pool via SPL transfer from the creator's ATA.
     if prize_pool > 0 {

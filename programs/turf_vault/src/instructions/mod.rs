@@ -9,7 +9,8 @@
 //   User accounts            — create_user_account, set_username
 //   Seasons                  — create_season
 //   Contest lifecycle        — create_contest, set_contest_lock_time,
-//                              settle_contest, cancel_contest, close_contest
+//                              set_contest_conclusion_time, settle_contest,
+//                              cancel_contest, close_contest
 //   Entries                  — enter_contest, enter_contest_with_token
 //   Free entries             — mint_entry_token
 //   Treasury                 — sweep_operator_revenue
@@ -22,6 +23,7 @@ pub mod set_username;
 pub mod create_season;
 pub mod create_contest;
 pub mod set_contest_lock_time;
+pub mod set_contest_conclusion_time;
 pub mod enter_contest;
 pub mod enter_contest_with_token;
 pub mod settle_contest;
@@ -40,6 +42,7 @@ pub use set_username::*;
 pub use create_season::*;
 pub use create_contest::*;
 pub use set_contest_lock_time::*;
+pub use set_contest_conclusion_time::*;
 pub use enter_contest::*;
 pub use enter_contest_with_token::*;
 pub use settle_contest::*;

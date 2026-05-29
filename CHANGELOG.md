@@ -2,6 +2,27 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.18.0] - 2026-05-29
+
+Adds the second derived timestamp: a contest **conclusion** marker, parallel to
+the v0.17 lock. `conclusion_timestamp` is carved out of `_reserved` (24 → 16),
+so the account size is again UNCHANGED and v0.17 Contest PDAs need no re-init
+(zeroed bytes decode as `conclusion_timestamp == 0`).
+
+### Added
+- **`conclusion_timestamp: i64` on `Contest`** (Unix seconds; `0` = none). Once
+  `Clock.unix_timestamp` passes it, the contest has concluded.
+- **`set_contest_conclusion_time(new_conclusion_timestamp)` instruction (1-of-3).**
+  Sets/clears the conclusion time; `0` clears it. Rejected once the contest has
+  already concluded or is settled/cancelled.
+- **`ContestConcluded` error (6035).**
+
+### Changed
+- **`set_contest_lock_time` now enforces the real conclusion gate**: rejects with
+  `ContestConcluded` once `conclusion_timestamp` has passed (replacing the v0.17
+  interim Settled/Cancelled-only proxy — that check is kept too). The lock time
+  is final once the contest concludes.
+
 ## [0.17.0] - 2026-05-29
 
 Contest locking becomes a DERIVED on-chain primitive instead of a status flip.

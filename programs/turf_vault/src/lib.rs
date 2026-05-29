@@ -165,6 +165,17 @@ pub mod turf_vault {
         handle_set_contest_lock_time(ctx, new_lock_timestamp)
     }
 
+    /// Set (or clear) a contest's conclusion timestamp (v0.18). 1-of-3. Once
+    /// chain time passes it the contest has concluded — set_contest_lock_time
+    /// then rejects. `new_conclusion_timestamp == 0` clears it. Rejected once
+    /// the contest has already concluded or is settled/cancelled.
+    pub fn set_contest_conclusion_time(
+        ctx: Context<SetContestConclusionTime>,
+        new_conclusion_timestamp: i64,
+    ) -> Result<()> {
+        handle_set_contest_conclusion_time(ctx, new_conclusion_timestamp)
+    }
+
     /// Grade a contest. Per-winner SPL transfer from the contest's USDC
     /// prize-pool PDA → winner's USDC ATA. 2-of-3.
     pub fn settle_contest<'info>(
