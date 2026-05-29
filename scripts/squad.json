@@ -11,5 +11,19 @@
     "mason": "CytJS23p1zCM2wvUUngiDePtbMB484ebD7bK4nDqWjrR"
   },
   "_v016_redeploy": "redeployed to fresh program ID 2026-05-27; old Dx8u\u2026 orphaned",
-  "_v016_redeploy_2": "devnet redeploy #2 on 2026-05-27 \u2014 Season 1 canonical schedule"
+  "_v016_redeploy_2": "devnet redeploy #2 on 2026-05-27 \u2014 Season 1 canonical schedule",
+
+  "_mainnet": "Placeholders \u2014 the operator replaces these per docs/MAINNET_LAUNCH.md \u00a73 \u2192 \u00a75. Until then, scripts/squad-upgrade.js must refuse any --network mainnet invocation that still sees the placeholder.",
+  "mainnet": {
+    "network": "mainnet-beta",
+    "programId": "11111111111111111111111111111111",
+    "multisigPda": "11111111111111111111111111111111",
+    "vaultPda": "11111111111111111111111111111111",
+    "threshold": 2,
+    "members": {
+      "alex_bot": "F6f8h5yynbnkgWvU5abQx3RJxJpe8EoQmeFBuNKdKzhZ",
+      "alex": "7ZDJp7FUHhuceAqcW9CHe81hCiaMTjgWAXfprBM59Tcr",
+      "mason": "CytJS23p1zCM2wvUUngiDePtbMB484ebD7bK4nDqWjrR"
+    }
+  }
 }

@@ -11,6 +11,12 @@ turf_vault = "EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ"
 [programs.devnet]
 turf_vault = "EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ"
 
+# Placeholder until the mainnet program keypair is generated — see
+# docs/MAINNET_LAUNCH.md §3. Must stay in sync with the mainnet
+# branch of declare_id! in programs/turf_vault/src/lib.rs.
+[programs.mainnet]
+turf_vault = "11111111111111111111111111111111"
+
 [registry]
 url = "https://api.apr.dev"
 
