@@ -2,6 +2,41 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.17.0] - 2026-05-29
+
+Contest locking becomes a DERIVED on-chain primitive instead of a status flip.
+A contest carries a `lock_timestamp`; `enter_contest{,_with_token}` reject new
+entries once the chain `Clock.unix_timestamp` passes it. No oracle — the Clock
+sysvar (already used by `create_season` / `mint_entry_token`) is the time
+source. **No state-size change** — `lock_timestamp: i64` is carved out of the
+Contest `_reserved` padding (32 → 24 bytes), so existing Contest PDAs stay
+bit-compatible (their zeroed bytes decode as `lock_timestamp == 0` = no lock).
+
+### Added
+- **`lock_timestamp: i64` on `Contest`** (Unix seconds; `0` = no lock scheduled,
+  enterable indefinitely). Set at create time and adjustable afterward.
+- **`set_contest_lock_time(new_lock_timestamp)` instruction (1-of-3).** Sets or
+  clears the lock time. "Lock now" = pass the current chain time; `0` clears it.
+  Rejected once the contest is concluded (interim guard: `Settled`/`Cancelled`
+  via `ContestAlreadySettled` 6006; a dedicated conclusion timestamp will
+  tighten this later).
+- **`ContestLocked` error (6034).** Raised by both entry instructions when the
+  lock timestamp has passed.
+
+### Changed
+- **`create_contest` takes a `lock_timestamp: i64` arg** (appended after
+  `prize_pool`), stored on the Contest PDA.
+- **`enter_contest` + `enter_contest_with_token`** now enforce the derived time
+  gate in-handler (`Clock` is unavailable in account constraints), in addition
+  to the existing `status == Open` + `current_entries < max_entries` checks.
+
+### Removed
+- **`lock_contest` (1-of-3) and `unlock_contest` (2-of-3) instructions.**
+  Superseded by the derived time-lock. `ContestStatus::Locked` is now vestigial
+  (kept for enum-discriminant stability; no instruction sets it). `settle_contest`
+  / `cancel_contest` still accept `Open || Locked`; the `Locked` arm is dead but
+  harmless. Error `ContestNotLocked` (6028) retained for numbering stability.
+
 ## [0.15.1] - 2026-05-24
 
 Pre-mainnet audit closeout. Closes three findings from the 2026-05-24

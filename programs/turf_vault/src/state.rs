@@ -123,7 +123,7 @@ unsafe impl anchor_lang::__private::bytemuck::Zeroable for AcceptedCurrency {}
 pub struct VaultState {
     /// The three multisig signers. 1-of-3 can run routine ops; 2-of-3
     /// needed for treasury ops (settle, register/deactivate_currency,
-    /// cancel_contest, sweep_operator_revenue, unlock_contest, pause/unpause).
+    /// cancel_contest, sweep_operator_revenue, pause/unpause).
     pub signers: [Pubkey; 3],                          //   96
     /// Number of distinct signatures required for treasury ops. Currently 2.
     pub threshold: u8,                                 //    1
@@ -192,8 +192,11 @@ pub struct UserAccount {
 }
 
 /// Lifecycle of a Contest.
-///   Open      — accepting entries
-///   Locked    — entries closed, awaiting results (set by lock_contest)
+///   Open      — accepting entries (locking is now DERIVED from
+///               `lock_timestamp` vs chain time, not this status — see
+///               set_contest_lock_time + the enter_contest time gate)
+///   Locked    — vestigial (v0.17 retired lock_contest/unlock_contest); kept
+///               for enum-discriminant stability. No instruction sets it.
 ///   Settled   — graded, payouts disbursed
 ///   Cancelled — refunded to creator, no further state transitions allowed
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
@@ -239,8 +242,15 @@ pub struct Contest {
     pub payout_amounts: Vec<u64>,
     /// PDA bump.
     pub bump: u8,
+    /// Derived time-lock (Unix seconds, chain Clock). `now >= lock_timestamp`
+    /// ⇒ contest locked (no new entries). `0` = no lock scheduled (enterable
+    /// until a lock time is set). Carved out of the former `[u8; 32]`
+    /// `_reserved` padding (i64 = 8 bytes, `_reserved` 32 → 24) so total
+    /// `INIT_SPACE` is UNCHANGED — existing Contest PDAs need no re-init:
+    /// their zeroed reserved bytes decode as `lock_timestamp == 0`.
+    pub lock_timestamp: i64,
     /// Reserved padding for forward-compat.
-    pub _reserved: [u8; 32],
+    pub _reserved: [u8; 24],
 }
 
 /// Status of a single contest entry. Settle transitions Active → Won/Lost.

@@ -86,4 +86,6 @@ pub enum VaultError {
     TreasuryAuthorityMismatch,                   // 6032
     #[msg("Contest must have at least one entry fee or a non-zero prize pool")]
     FeeAndPrizeBothZero,                         // 6033
+    #[msg("Contest is locked — the lock timestamp has passed")]
+    ContestLocked,                               // 6034
 }

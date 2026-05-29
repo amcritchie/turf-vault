@@ -15,7 +15,7 @@ use crate::errors::VaultError;
 ///   - mint_entry_token
 ///   - register_currency, deactivate_currency
 ///   - set_username, create_user_account
-///   - create_season, create_contest, lock_contest, unlock_contest
+///   - create_season, create_contest, set_contest_lock_time
 ///   - sweep_operator_revenue
 ///   - pause, unpause
 ///

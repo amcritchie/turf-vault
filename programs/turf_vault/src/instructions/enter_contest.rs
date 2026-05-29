@@ -127,6 +127,17 @@ pub fn handle_enter_contest(
     // Pause guard.
     require!(paused == 0, VaultError::VaultPaused);
 
+    // Derived time-lock: reject entries once the contest's lock timestamp has
+    // passed. `lock_timestamp == 0` means no lock is scheduled. This is the
+    // authoritative lock — Rails enforces an advisory copy for UX only.
+    let lock_ts = ctx.accounts.contest.lock_timestamp;
+    if lock_ts != 0 {
+        require!(
+            Clock::get()?.unix_timestamp < lock_ts,
+            VaultError::ContestLocked
+        );
+    }
+
     // Slot must be in use (registered).
     require!(slot_mint != Pubkey::default(), VaultError::InvalidCurrencyIndex);
     // Slot must be active.
