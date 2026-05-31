@@ -8,7 +8,7 @@ Anchor smart contract for contest escrow on Solana. Backend for Turf Monster (Ra
 - **Framework**: Anchor 0.32.1
 - **Rust**: 1.89.0 (via `rust-toolchain.toml`)
 - **Network**: Localnet (dev), Devnet (staging)
-- **Version**: 0.16.0
+- **Version**: 0.18.0
 - **Binary**: 495,280 bytes / 3.448 SOL permanent rent
 - **Upgrade authority**: Squads V4 2-of-3 multisig PDA `BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC` (OPSEC-002 — see "Deploying an upgrade" below). `anchor deploy` no longer works for upgrades; the first deploy of a fresh program ID still uses `solana program deploy` from Alex Bot, then `set-upgrade-authority` to the Squads vault.
 
@@ -36,8 +36,8 @@ programs/turf_vault/src/
     ├── set_username.rs         # Owner signs; v0.15.1 on-chain validation
     ├── create_season.rs        # Immutable per-entry seed-award schedule
     ├── create_contest.rs       # entry_fee_by_currency[16] + USDC prize_pool
-    ├── lock_contest.rs         # NEW (1-of-3) — Open → Locked
-    ├── unlock_contest.rs       # NEW (2-of-3) — Locked → Open (safety hatch)
+    ├── set_contest_lock_time.rs       # NEW (1-of-3) — set Contest.lock_timestamp (derived time-lock)
+    ├── set_contest_conclusion_time.rs # NEW (1-of-3) — set Contest.conclusion_timestamp (finalizes lock)
     ├── enter_contest.rs        # Unified entry (user signs + 1-of-3 payer)
     ├── enter_contest_with_token.rs # Token-funded entry (wallet co-signs OPSEC-004)
     ├── settle_contest.rs       # 2-of-3; SPL CPI per winner from prize_pool PDA
@@ -88,8 +88,8 @@ pub fn validate_multisig(&self, s1: &Pubkey, s2: &Pubkey) -> bool {
 | `set_username` | User signs | Wallet owner signs; v0.15.1 on-chain validation (reserved prefixes, ASCII, ≥3 chars). |
 | `create_season` | 1-of-3 | Any signer can create. Seed schedule immutable after create. |
 | `create_contest` | 1-of-3 + creator | Admin pays SOL rent; creator (Phantom or server-keypair) signs the USDC prize-pool transfer. |
-| `lock_contest` | 1-of-3 | Status Open → Locked. |
-| `unlock_contest` | **2-of-3** | Status Locked → Open. Safety hatch — multisig because it re-opens a contest the operator deliberately closed. |
+| `set_contest_lock_time` | 1-of-3 | Sets `Contest.lock_timestamp` (derived time-lock). Rejected once `conclusion_timestamp` has passed (`ContestConcluded` 6035). |
+| `set_contest_conclusion_time` | 1-of-3 | Sets `Contest.conclusion_timestamp`; once passed, the lock time is final. |
 | `enter_contest` | User + 1-of-3 payer | User signs SPL transfer from their ATA → currency's op-rev ATA. Admin pays SOL rent (OPSEC-024 channel discipline). |
 | `enter_contest_with_token` | User + 1-of-3 payer | Wallet must sign (OPSEC-004) to consent to token consume. |
 | `settle_contest` | **2-of-3** | SPL CPI per winner from `[b"prize_pool", contest_id]` PDA. Rails must set `set_compute_unit_limit(400_000)` — default budget tops out near ~25 winners. |
@@ -143,7 +143,7 @@ All accounts use `#[derive(InitSpace)]`. Contest has `#[max_len(10)]` on `payout
 ## State Model
 
 ### Enums
-- `ContestStatus`: Open → Locked → Settled OR Open/Locked → Cancelled (Cancelled is terminal)
+- `ContestStatus`: Open → Settled OR Open → Cancelled (Cancelled is terminal). `Locked` is now a **vestigial variant** (kept for discriminant stability; no instruction sets it — locking is a derived time-lock, see Key Design Decisions).
 - `EntryStatus`: Active → Won (rank > 0, payout > 0) / Lost
 
 ### VaultState — zero-copy, `#[account(zero_copy(unsafe))]`, `#[repr(C)]`, 1515 bytes
@@ -165,7 +165,11 @@ All accounts use `#[derive(InitSpace)]`. Contest has `#[max_len(10)]` on `payout
 - `entry_fees: [u64; 16]` (collected fees per currency — informational, NOT used for settlement cap)
 - `max_entries: u32`, `current_entries: u32`, `status: ContestStatus`
 - `payout_amounts: Vec<u64>` (max 10 ranks; sum must equal `prize_pool`)
-- `bump: u8`, `_reserved: [u8; 32]`
+- `lock_timestamp: i64` (v0.17 — derived time-lock; `enter_contest{,_with_token}` reject once `Clock.unix_timestamp >= lock_timestamp`; 0 = no lock)
+- `conclusion_timestamp: i64` (v0.18 — once passed, the lock time is final; 0 = no conclusion)
+- `bump: u8`, `_reserved: [u8; 16]`
+
+> **Account size UNCHANGED across v0.16→v0.17→v0.18.** `lock_timestamp` (8 bytes) and `conclusion_timestamp` (8 bytes) were carved out of the original `[u8; 32]` `_reserved` (now `[u8; 16]`), so existing Contest PDAs need no re-init — zeroed reserved bytes decode as 0 = no lock / no conclusion.
 
 ### Key Constraints
 - All token amounts: `u64` with 6 decimals (1 USDC = 1_000_000)
@@ -206,12 +210,14 @@ All accounts use `#[derive(InitSpace)]`. Contest has `#[max_len(10)]` on `payout
 | 6025 | InvalidCurrencyIndex | `currency_idx` is ≥ 16 OR points to an empty (mint == default) slot |
 | 6026 | CurrencyNotActive | Slot is registered but `active == 0` |
 | 6027 | EntryFeeNotSet | `contest.entry_fee_by_currency[currency_idx] == 0` |
-| 6028 | ContestNotLocked | `unlock_contest` called against an Open or Settled contest |
+| 6028 | ContestNotLocked | UNUSED-but-kept (numbering stability) — `unlock_contest` retired in v0.17 |
 | 6029 | ContestNotCancellable | `cancel_contest` called against a Settled or already-Cancelled contest |
 | 6030 | PrizePoolNotEmpty | `close_contest` finds residual USDC in the prize pool (should be unreachable — close_contest sweeps dust first) |
 | 6031 | EmptyRevenueAccount | `sweep_operator_revenue` called against an empty op-rev ATA |
 | 6032 | TreasuryAuthorityMismatch | `sweep_operator_revenue` destination ATA owner ≠ `vault_state.treasury_authority` |
 | 6033 | FeeAndPrizeBothZero | `create_contest` with `prize_pool == 0` AND all `entry_fee_by_currency` slots zero |
+| 6034 | ContestLocked | `enter_contest{,_with_token}` when `Clock.unix_timestamp >= lock_timestamp` (v0.17) |
+| 6035 | ContestConcluded | `set_contest_lock_time` rejected once `conclusion_timestamp` has passed (v0.18) |
 
 ## Testing
 
@@ -343,7 +349,7 @@ bin/rails solana:init_vault INIT=true SIGNERS=addr1,addr2,addr3 THRESHOLD=2
 - **USDC Mint**: `222Dcu2RgAXE3T8A4mGSG3kQyXaNjqePx7vva1RdWBN9` (test, 6 decimals)
 - **USDT Mint**: `9mxkN8KaVA8FFgDE2LEsn2UbYLPG8Xg9bf4V9MYYi8Ne` (test, 6 decimals)
 
-**Status**: **v0.17.0 deployed on devnet 2026-05-29 (slot 465778752)** via the Squads upgrade. Adds the derived on-chain time-lock — `Contest.lock_timestamp` (carved from `_reserved`, no size change) + `set_contest_lock_time` (1-of-3); `enter_contest{,_with_token}` reject once `Clock.unix_timestamp` passes it (`ContestLocked` 6034); retired `lock_contest`/`unlock_contest`. IDL hash (re-pinned in turf-monster): `e55327c72619c8f8b48206093ea12c910fc3d6edab256e5cf15d3b55b904d527`. 2-of-3 multisig for treasury ops; upgrade authority is the Squads V4 vault. Vault initialized with 3 signers (Alex Bot, Alex, Mason), threshold 2.
+**Status**: **v0.18.0 deployed on devnet 2026-05-31 (slot 465782911)** via the Squads upgrade (v0.17.0 was slot 465778752). v0.17 added the derived on-chain time-lock — `Contest.lock_timestamp` (carved from `_reserved`, no size change) + `set_contest_lock_time` (1-of-3); `enter_contest{,_with_token}` reject once `Clock.unix_timestamp` passes it (`ContestLocked` 6034); retired `lock_contest`/`unlock_contest`. v0.18 adds `Contest.conclusion_timestamp` (also carved from `_reserved`, no size change) + `set_contest_conclusion_time` (1-of-3); once passed, the lock time is final (`set_contest_lock_time` then rejects with `ContestConcluded` 6035). IDL hash (re-pinned in turf-monster): `2d87b0935f5cd217b04a98153033c371d0b6f90018e9713acf3c3b44fe4db263`. 2-of-3 multisig for treasury ops; upgrade authority is the Squads V4 vault. Vault initialized with 3 signers (Alex Bot, Alex, Mason), threshold 2.
 
 > **Note**: the program was migrated off the orphaned ID `7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J` on 2026-05-18 (its upgrade authority was lost). ~3.45 SOL of rent stays locked at the old program forever (devnet only).
 
@@ -385,7 +391,7 @@ The Rails app calls TurfVault through a `Solana::Vault` service layer:
 - **Managed entry** (`enter_contest`): Separates payer (admin signer) from wallet (entry owner) — deducts from UserAccount PDA balance. For server-managed wallets.
 - **Direct entry** (`enter_contest_direct`): User signs USDC transfer from their own wallet ATA to vault. Admin pays PDA rent so user only spends USDC. For Phantom wallets. Added in v0.3.0. Requires `user_account` PDA (for seeds award) since v0.5.0.
 - **Hard escrow contest creation** (`create_contest` v0.4.0): Dual-signer — `payer` (admin bot, pays SOL rent) + `creator` (Phantom wallet, signs prizes USDC transfer from creator ATA → vault). Contest struct stores `creator` pubkey. If prizes is 0, no transfer occurs but token accounts are still required.
-- **No lock instruction**: Contest can go directly from Open to Settled (Locked status exists but no instruction sets it yet)
+- **Derived time-lock** (v0.17/v0.18): Locking is NOT a status transition — it's a derived time-lock. `set_contest_lock_time` (1-of-3) sets `Contest.lock_timestamp`; `enter_contest{,_with_token}` reject once `Clock.unix_timestamp >= lock_timestamp` (`ContestLocked` 6034). `set_contest_conclusion_time` (1-of-3) sets `conclusion_timestamp`; once passed, the lock time is final (`set_contest_lock_time` then rejects with `ContestConcluded` 6035). The old `lock_contest`/`unlock_contest` status instructions are retired; `ContestStatus::Locked` survives only as a vestigial discriminant.
 - **2-of-3 Multisig** (v0.8.0): Treasury ops require 2 distinct signers (`admin` + `cosigner`). Routine ops require any 1-of-3. Server partially signs, human cosigns via Phantom.
 - **Dual mint**: USDC + USDT supported from day one, separate vault token accounts
 - **Seeds system** (v0.5.0, per-season schedule since v0.11.0): All four entry instructions (`enter_contest`, `enter_contest_direct`, `enter_contest_with_token`, `enter_contest_direct_with_token`) award seeds to the user's `UserAccount` PDA from the contest's bound `Season` — `season.seed_schedule[entry_num.min(4)]` (entries 5+ clamp to slot 4). Seeds are on-chain only — Rails reads them via `sync_balance` and derives levels in the UI (`level = seeds / 100 + 1`).
