@@ -95,6 +95,15 @@ pub fn handle_enter_contest_with_token(
         require!(vault.paused == 0, VaultError::VaultPaused);
     }
 
+    // Derived time-lock (see enter_contest). `lock_timestamp == 0` = no lock.
+    let lock_ts = ctx.accounts.contest.lock_timestamp;
+    if lock_ts != 0 {
+        require!(
+            Clock::get()?.unix_timestamp < lock_ts,
+            VaultError::ContestLocked
+        );
+    }
+
     let contest = &mut ctx.accounts.contest;
     let entry_token = &mut ctx.accounts.entry_token;
     let season = &ctx.accounts.season;

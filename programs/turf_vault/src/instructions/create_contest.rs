@@ -97,6 +97,7 @@ pub fn handle_create_contest(
     max_entries: u32,
     payout_amounts: Vec<u64>,
     prize_pool: u64,
+    lock_timestamp: i64,
 ) -> Result<()> {
     // Validation #2: payout sum == prize_pool (checked add — OPSEC-025).
     let total_payouts: u64 = payout_amounts
@@ -144,7 +145,12 @@ pub fn handle_create_contest(
     contest.status = ContestStatus::Open;
     contest.payout_amounts = payout_amounts;
     contest.bump = ctx.bumps.contest;
-    contest._reserved = [0; 32];
+    // 0 = no lock scheduled; a non-zero value gates entries once chain time
+    // passes it (see enter_contest / enter_contest_with_token).
+    contest.lock_timestamp = lock_timestamp;
+    // Conclusion is set later via set_contest_conclusion_time (0 = none yet).
+    contest.conclusion_timestamp = 0;
+    contest._reserved = [0; 16];
 
     // Fund the prize pool via SPL transfer from the creator's ATA.
     if prize_pool > 0 {

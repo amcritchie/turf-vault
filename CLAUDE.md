@@ -333,18 +333,17 @@ bin/rails solana:init_vault INIT=true SIGNERS=addr1,addr2,addr3 THRESHOLD=2
 
 ### Current Deployment (Devnet)
 
-- **Program ID**: `Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT`
+- **Program ID**: `EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ` (the orphaned `Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT` is dead — see header)
 - **Upgrade authority**: Squads V4 vault PDA `BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC` (2-of-3 multisig — OPSEC-002)
-- **VaultState PDA**: `FYBTB5pwoSxN4CF5M45gW3e8hwMNFit6phbgyd4vpWAn`
+- **VaultState PDA**: derived `[b"vault"]` under the EQGF program (the old `FYBTB5pwoSxN…vpWAn` was Dx8u-era — refresh from `bin/rails runner` if you need the literal)
 - **Signer 1**: Alex Bot — `F6f8h5yynbnkgWvU5abQx3RJxJpe8EoQmeFBuNKdKzhZ`
 - **Signer 2**: Alex — `7ZDJp7FUHhuceAqcW9CHe81hCiaMTjgWAXfprBM59Tcr`
 - **Signer 3**: Mason — `CytJS23p1zCM2wvUUngiDePtbMB484ebD7bK4nDqWjrR`
 - **Threshold**: 2-of-3 for treasury ops
 - **USDC Mint**: `222Dcu2RgAXE3T8A4mGSG3kQyXaNjqePx7vva1RdWBN9` (test, 6 decimals)
 - **USDT Mint**: `9mxkN8KaVA8FFgDE2LEsn2UbYLPG8Xg9bf4V9MYYi8Ne` (test, 6 decimals)
-- **IDL Account**: `66fFnyBykZRKrbU3dGzkd8udoadgMtH2u9XCj9nA5x75`
 
-**Status**: v0.14.0 deployed on devnet (username field on UserAccount). v0.15.1 is staged in `main` awaiting the next Squads upgrade — closes prelaunch audit C1 (delete `migrate_user_account`), C2 (`set_username` + `create_user_account` validation), H1 (PDA-seed-bind Contest in entry/settle). 2-of-3 multisig for treasury ops; program upgrade authority is a Squads V4 2-of-3 multisig. Vault initialized with 3 signers (Alex Bot, Alex, Mason), threshold 2. New IDL hash pre-computed: `3112af26400f53c0fe93cedc7956a4efe6ed1c18eb1f42f8e7fa44178ea83401`.
+**Status**: **v0.17.0 deployed on devnet 2026-05-29 (slot 465778752)** via the Squads upgrade. Adds the derived on-chain time-lock — `Contest.lock_timestamp` (carved from `_reserved`, no size change) + `set_contest_lock_time` (1-of-3); `enter_contest{,_with_token}` reject once `Clock.unix_timestamp` passes it (`ContestLocked` 6034); retired `lock_contest`/`unlock_contest`. IDL hash (re-pinned in turf-monster): `e55327c72619c8f8b48206093ea12c910fc3d6edab256e5cf15d3b55b904d527`. 2-of-3 multisig for treasury ops; upgrade authority is the Squads V4 vault. Vault initialized with 3 signers (Alex Bot, Alex, Mason), threshold 2.
 
 > **Note**: the program was migrated off the orphaned ID `7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J` on 2026-05-18 (its upgrade authority was lost). ~3.45 SOL of rent stays locked at the old program forever (devnet only).
 

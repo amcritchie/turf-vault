@@ -13,10 +13,11 @@
 //!   - **EntryTokenAccount** is a pre-purchased free-entry voucher.
 //!
 //! Auth model:
-//!   - **1-of-3 vault signer**: routine ops (create_contest, lock_contest,
-//!     close_contest, mint_entry_token, facilitate entries).
+//!   - **1-of-3 vault signer**: routine ops (create_contest,
+//!     set_contest_lock_time, close_contest, mint_entry_token, facilitate
+//!     entries).
 //!   - **2-of-3 vault signers**: treasury ops (register_currency,
-//!     deactivate_currency, settle_contest, unlock_contest, cancel_contest,
+//!     deactivate_currency, settle_contest, cancel_contest,
 //!     sweep_operator_revenue, pause, unpause).
 //!   - **User signature**: enter_contest{,_with_token}, set_username,
 //!     create_contest (as creator funding the prize pool).
@@ -138,6 +139,7 @@ pub mod turf_vault {
         max_entries: u32,
         payout_amounts: Vec<u64>,
         prize_pool: u64,
+        lock_timestamp: i64,
     ) -> Result<()> {
         handle_create_contest(
             ctx,
@@ -147,17 +149,31 @@ pub mod turf_vault {
             max_entries,
             payout_amounts,
             prize_pool,
+            lock_timestamp,
         )
     }
 
-    /// Flip Contest.status: Open → Locked. 1-of-3.
-    pub fn lock_contest(ctx: Context<LockContest>) -> Result<()> {
-        handle_lock_contest(ctx)
+    /// Set (or clear) a contest's derived lock timestamp. 1-of-3.
+    /// `new_lock_timestamp == 0` clears the lock (enterable indefinitely); any
+    /// non-zero Unix-seconds value locks entries once chain time passes it.
+    /// "Lock now" = pass the current chain time. Rejected once the contest is
+    /// concluded (interim guard: Settled/Cancelled).
+    pub fn set_contest_lock_time(
+        ctx: Context<SetContestLockTime>,
+        new_lock_timestamp: i64,
+    ) -> Result<()> {
+        handle_set_contest_lock_time(ctx, new_lock_timestamp)
     }
 
-    /// Flip Contest.status: Locked → Open. 2-of-3 (safety hatch).
-    pub fn unlock_contest(ctx: Context<UnlockContest>) -> Result<()> {
-        handle_unlock_contest(ctx)
+    /// Set (or clear) a contest's conclusion timestamp (v0.18). 1-of-3. Once
+    /// chain time passes it the contest has concluded — set_contest_lock_time
+    /// then rejects. `new_conclusion_timestamp == 0` clears it. Rejected once
+    /// the contest has already concluded or is settled/cancelled.
+    pub fn set_contest_conclusion_time(
+        ctx: Context<SetContestConclusionTime>,
+        new_conclusion_timestamp: i64,
+    ) -> Result<()> {
+        handle_set_contest_conclusion_time(ctx, new_conclusion_timestamp)
     }
 
     /// Grade a contest. Per-winner SPL transfer from the contest's USDC
