@@ -8,7 +8,7 @@ Anchor smart contract for contest escrow on Solana. Backend for Turf Monster (Ra
 - **Framework**: Anchor 0.32.1
 - **Rust**: 1.89.0 (via `rust-toolchain.toml`)
 - **Network**: Localnet (dev), Devnet (staging)
-- **Version**: 0.18.0
+- **Version**: 0.19.0
 - **Binary**: 495,280 bytes / 3.448 SOL permanent rent
 - **Upgrade authority**: Squads V4 2-of-3 multisig PDA `BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC` (OPSEC-002 — see "Deploying an upgrade" below). `anchor deploy` no longer works for upgrades; the first deploy of a fresh program ID still uses `solana program deploy` from Alex Bot, then `set-upgrade-authority` to the Squads vault.
 
@@ -88,14 +88,14 @@ pub fn validate_multisig(&self, s1: &Pubkey, s2: &Pubkey) -> bool {
 | `set_username` | User signs | Wallet owner signs; v0.15.1 on-chain validation (reserved prefixes, ASCII, ≥3 chars). |
 | `create_season` | 1-of-3 | Any signer can create. Seed schedule immutable after create. |
 | `create_contest` | 1-of-3 + creator | Admin pays SOL rent; creator (Phantom or server-keypair) signs the USDC prize-pool transfer. |
-| `set_contest_lock_time` | 1-of-3 | Sets `Contest.lock_timestamp` (derived time-lock). Rejected once `conclusion_timestamp` has passed (`ContestConcluded` 6035). |
-| `set_contest_conclusion_time` | 1-of-3 | Sets `Contest.conclusion_timestamp`; once passed, the lock time is final. |
+| `set_contest_lock_time` | 1-of-3 / **2-of-3 post-lock** | Sets `Contest.lock_timestamp`. Pre-lock: 1-of-3. Amending a lock that has ALREADY PASSED requires 2-of-3 (optional `cosigner`) — closes the #5 re-open vector. Rejected once concluded (`ContestConcluded` 6035) or on invalid timestamps (`InvalidTimestamp` 6037). |
+| `set_contest_conclusion_time` | 1-of-3 / **2-of-3 to amend** | First set (0→value): 1-of-3. Amending an already-set conclusion: 2-of-3 (optional `cosigner`). Must be in the future and after a set lock (`InvalidTimestamp` 6037). |
 | `enter_contest` | User + 1-of-3 payer | User signs SPL transfer from their ATA → currency's op-rev ATA. Admin pays SOL rent (OPSEC-024 channel discipline). |
 | `enter_contest_with_token` | User + 1-of-3 payer | Wallet must sign (OPSEC-004) to consent to token consume. |
-| `settle_contest` | **2-of-3** | SPL CPI per winner from `[b"prize_pool", contest_id]` PDA. Rails must set `set_compute_unit_limit(400_000)` — default budget tops out near ~25 winners. |
+| `settle_contest` | **2-of-3** | SPL CPI per winner from `[b"prize_pool", contest_id]` PDA → each winner's canonical ATA, bound on-chain (`InvalidPayoutDestination` 6036, #3). Requires the lock OR conclusion timestamp to have passed (`ContestNotLocked` 6028, #6). Rails must set `set_compute_unit_limit(400_000)` — default budget tops out near ~25 winners. |
 | `cancel_contest` | **2-of-3** | Status → Cancelled. Refunds full `prize_pool` to creator. Entry fees stay with operator (treated as revenue); operator-side playbook is to `mint_entry_token` goodwill credits to affected entrants. |
 | `close_contest` | 1-of-3 | Settled or Cancelled contests only. Sweeps any prize_pool dust to op-rev USDC, then closes the contest PDA (rent → admin). |
-| `mint_entry_token` | 1-of-3 | Admin mints free-entry voucher PDAs. Idempotent per `source_ref`. |
+| `mint_entry_token` | 1-of-3 | Admin mints free-entry voucher PDAs. Idempotent per `source_ref` — the PDA is seeded on `sha256(source_ref)` (passed as `source_ref_hash`, asserted on-chain, `EntryTokenSeedMismatch` 6038), so re-minting the same ref collides on init (v0.19, #9). `source_ref` must be globally unique across wallets. |
 | `register_currency` | **2-of-3** | Add a mint to `accepted_currencies` at the first empty slot. Also creates the per-currency op-rev ATA at `[b"op_rev", mint]`. |
 | `deactivate_currency` | **2-of-3** | Flips `accepted_currencies[idx].active = 0`. Slot is never reclaimed — preserves `currency_idx` stability across the program's life. |
 | `sweep_operator_revenue` | **2-of-3** | Drains a currency's op-rev ATA to `vault_state.treasury_authority` (pinned to the Squads vault PDA at init). |
@@ -118,7 +118,7 @@ pub fn validate_multisig(&self, s1: &Pubkey, s2: &Pubkey) -> bool {
 | UserAccount | `[b"user", wallet]` | One per wallet |
 | Contest | `[b"contest", contest_id]` | contest_id = SHA256 of Rails slug |
 | ContestEntry | `[b"entry", contest_id, wallet, entry_num.to_le_bytes()]` | Multiple per user |
-| EntryTokenAccount | `[b"entry_token", owner, sequence.to_le_bytes()]` | sequence = u64 LE; discover via getProgramAccounts on `owner` |
+| EntryTokenAccount | `[b"entry_token", sha256(source_ref)]` | v0.19 (#9): source_ref hashed to 32 bytes (passed as `source_ref_hash`, asserted on-chain). Discover via getProgramAccounts on `owner` (still in the body). |
 | Season | `[b"season", season_id.to_le_bytes()]` | season_id = u32 LE |
 
 ### CPI Token Transfers
@@ -218,6 +218,9 @@ All accounts use `#[derive(InitSpace)]`. Contest has `#[max_len(10)]` on `payout
 | 6033 | FeeAndPrizeBothZero | `create_contest` with `prize_pool == 0` AND all `entry_fee_by_currency` slots zero |
 | 6034 | ContestLocked | `enter_contest{,_with_token}` when `Clock.unix_timestamp >= lock_timestamp` (v0.17) |
 | 6035 | ContestConcluded | `set_contest_lock_time` rejected once `conclusion_timestamp` has passed (v0.18) |
+| 6036 | InvalidPayoutDestination | `settle_contest` winner_ata ≠ the winner's canonical ATA (v0.19, #3) |
+| 6037 | InvalidTimestamp | `set_contest_lock_time`/`set_contest_conclusion_time` given a negative/past or mis-ordered (lock ≥ conclusion) timestamp (v0.19, #5) |
+| 6038 | EntryTokenSeedMismatch | `mint_entry_token` `source_ref_hash` ≠ sha256(`source_ref`) (v0.19, #9) |
 
 ## Testing
 

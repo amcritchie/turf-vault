@@ -299,8 +299,11 @@ pub mod entry_token_source {
 /// EntryTokenAccount: a pre-purchased contest entry token issued by the admin.
 /// User redeems one of these to enter a contest without paying the entry fee at entry time.
 ///
-/// PDA seeds: [b"entry_token", owner.as_ref(), sequence.to_le_bytes().as_ref()]
-/// Discovery: getProgramAccounts filter by `owner`.
+/// PDA seeds (v0.19, audit #9): [b"entry_token", sha256(source_ref)]. Derived
+/// from the external reference's hash so re-minting the same `source_ref`
+/// collides on init (true idempotency); replaces the old caller-supplied
+/// `sequence`. `source_ref` must be globally unique across wallets.
+/// Discovery: getProgramAccounts filter by `owner` (still in the account body).
 #[account]
 pub struct EntryTokenAccount {
     pub owner: Pubkey,            // user wallet

@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+use anchor_spl::associated_token::get_associated_token_address;
 use crate::state::{VaultState, UserAccount, Contest, ContestEntry, ContestStatus, EntryStatus};
 use crate::errors::VaultError;
 
@@ -93,6 +94,17 @@ pub fn handle_settle_contest<'info>(
 ) -> Result<()> {
     let contest = &mut ctx.accounts.contest;
 
+    // Audit #6: grading requires a provably-closed entry window. Settle only
+    // once the derived lock OR conclusion timestamp has passed — otherwise a
+    // contest could be graded while still open for entries. Reuses the
+    // existing (dead-but-mapped) ContestNotLocked code. The status==Open||Locked
+    // constraint above still guards against double-settle.
+    let now = Clock::get()?.unix_timestamp;
+    let lock_passed = contest.lock_timestamp != 0 && now >= contest.lock_timestamp;
+    let conclusion_passed =
+        contest.conclusion_timestamp != 0 && now >= contest.conclusion_timestamp;
+    require!(lock_passed || conclusion_passed, VaultError::ContestNotLocked);
+
     // Validate total payouts ≤ prize_pool (entry fees no longer count).
     let total_payouts: u64 = settlements
         .iter()
@@ -125,6 +137,12 @@ pub fn handle_settle_contest<'info>(
     let vault_seeds: &[&[u8]] = &[b"vault", core::slice::from_ref(&vault_bump)];
     let signer_seeds = &[vault_seeds];
 
+    // Audit #3: the pinned payout mint (USDC, == vault_state.payout_mint per the
+    // account constraint). Each winner_ata is bound to the canonical ATA of
+    // (settlement.wallet, payout_mint) below — without this the prize pool can
+    // be redirected to any same-mint account while stats credit the real winner.
+    let payout_mint_key = ctx.accounts.payout_mint.key();
+
     for (i, settlement) in settlements.iter().enumerate() {
         let user_account_info = &remaining[i * 3];
         let entry_account_info = &remaining[i * 3 + 1];
@@ -153,6 +171,17 @@ pub fn handle_settle_contest<'info>(
         require!(
             entry_account_info.key() == expected_entry_pda,
             VaultError::Unauthorized
+        );
+
+        // Audit #3: bind the payout destination to the winner's canonical USDC
+        // ATA. Validated for every row (even zero-payout) so a junk winner_ata
+        // can never be smuggled in. Matches the Rails honest path, which already
+        // derives get_associated_token_address(settlement.wallet, USDC).
+        let expected_winner_ata =
+            get_associated_token_address(&settlement.wallet, &payout_mint_key);
+        require!(
+            winner_ata_info.key() == expected_winner_ata,
+            VaultError::InvalidPayoutDestination
         );
 
         // SPL transfer (PDA-signed): prize_pool → winner_usdc_ata.
