@@ -224,13 +224,15 @@ pub mod turf_vault {
     // ── Free entries ──────────────────────────────────────────────────────
 
     /// Mint a new EntryTokenAccount for a user. 1-of-3 vault signer.
+    /// PDA is derived from sha256(source_ref) (v0.19, audit #9) — re-minting the
+    /// same source_ref collides on init for true on-chain idempotency.
     pub fn mint_entry_token(
         ctx: Context<MintEntryToken>,
-        sequence: u64,
         source: u8,
         source_ref: [u8; 64],
+        source_ref_hash: [u8; 32],
     ) -> Result<()> {
-        handle_mint_entry_token(ctx, sequence, source, source_ref)
+        handle_mint_entry_token(ctx, source, source_ref, source_ref_hash)
     }
 
     // ── Treasury ──────────────────────────────────────────────────────────

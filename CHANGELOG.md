@@ -2,6 +2,51 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.19.0] - 2026-05-31
+
+Security hardening from the 2026-05-31 adversarial audit (highs #3 / #5 / #6 / #9).
+No account-layout/byte-size change — Contest, EntryTokenAccount, VaultState bodies
+are untouched, so existing PDAs need no re-init. The IDL DOES change (new errors +
+`mint_entry_token` args + `set_contest_lock_time`/`set_contest_conclusion_time`
+optional cosigner), so turf-monster must re-pin `EXPECTED_IDL_HASH` from the
+freshly-built IDL.
+
+### Security
+
+- **#3 `settle_contest` — bind payout destination.** Each winner's payout must
+  now land in `get_associated_token_address(settlement.wallet, payout_mint)`,
+  validated for every settlement row before the SPL transfer. Previously the
+  destination ATA was unconstrained, so a settle authority could redirect the
+  prize pool to any same-mint account while stats credited the real winner.
+  New error 6036 `InvalidPayoutDestination`.
+- **#6 `settle_contest` — entries-closed gate.** Settle now requires the derived
+  lock OR conclusion timestamp to have passed (reuses 6028 `ContestNotLocked`),
+  so a contest can't be graded while still open for entries.
+- **#5 `set_contest_lock_time` / `set_contest_conclusion_time` — finality + multisig.**
+  Pre-lock changes stay 1-of-3; amending a lock that has ALREADY PASSED requires
+  2-of-3 (optional `cosigner` + `validate_multisig`), closing the results-known
+  late-entry re-open vector. A set conclusion is likewise 2-of-3 to amend (first
+  set stays 1-of-3). Timestamps must be non-negative, a set conclusion must be in
+  the future, and a set lock must precede a set conclusion. New error 6037
+  `InvalidTimestamp`.
+- **#9 `mint_entry_token` — on-chain idempotency.** The EntryTokenAccount PDA is
+  now seeded on `sha256(source_ref)` (passed as `source_ref_hash`, asserted
+  on-chain) instead of a caller-supplied `sequence`, so re-minting the same
+  `source_ref` collides on `init` and fails. Stays 1-of-3. `source_ref` must be
+  globally unique across wallets. New error 6038 `EntryTokenSeedMismatch`.
+  Account body unchanged; `owner` still drives getProgramAccounts discovery.
+
+### Breaking (signatures, NOT account layout)
+
+- `mint_entry_token` drops `sequence`, adds `source_ref_hash`.
+- `set_contest_lock_time` / `set_contest_conclusion_time` gain an optional `cosigner`.
+- turf-monster + solana-studio must update in the same deploy that FOLLOWS the
+  Squads upgrade. Rails coordination owed: entry-token PDA from
+  `sha256(source_ref)`; per-mint globally-unique `source_ref` (operator-mint
+  regression — a looped `operator_<unix_ts>` now collides); cosign path for
+  post-lock amends; `grade!` must ensure a lock/conclusion is set (else settle
+  reverts 6028); `error_interpreter` mappings for 6036/6037/6038.
+
 ## [0.18.0] - 2026-05-29
 
 Adds the second derived timestamp: a contest **conclusion** marker, parallel to

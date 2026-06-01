@@ -90,4 +90,12 @@ pub enum VaultError {
     ContestLocked,                               // 6034
     #[msg("Contest has concluded — the conclusion timestamp has passed")]
     ContestConcluded,                            // 6035
+
+    // ── 6036+: new in v0.19 (audit highs #3 / #5) ─────────────────────────
+    #[msg("Settlement payout destination is not the winner's associated token account")]
+    InvalidPayoutDestination,                    // 6036
+    #[msg("Invalid contest timestamp: must be non-negative, in the future, and lock must precede conclusion")]
+    InvalidTimestamp,                            // 6037
+    #[msg("Entry token seed hash does not match sha256(source_ref)")]
+    EntryTokenSeedMismatch,                      // 6038
 }

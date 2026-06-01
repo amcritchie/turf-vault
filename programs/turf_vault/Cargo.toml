@@ -1,6 +1,6 @@
 [package]
 name = "turf_vault"
-version = "0.18.0"
+version = "0.19.0"
 description = "Solana contest escrow with on-chain currency registry and self-custodial entries"
 edition = "2021"
 
@@ -29,6 +29,11 @@ mainnet = []
 [dependencies]
 anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
 anchor-spl = "0.32.1"
+# Direct dep for SHA-256 (solana_program::hash::hash) used to derive the
+# entry_token PDA from source_ref (v0.19, audit #9). anchor_lang::solana_program
+# is a curated facade that omits the `hash` module. Pinned to the same 2.3.x
+# already in the tree via anchor — no duplicate version.
+solana-program = "2.3"
 
 
 [lints.rust]
