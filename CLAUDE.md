@@ -8,7 +8,7 @@ Anchor smart contract for contest escrow on Solana. Backend for Turf Monster (Ra
 - **Framework**: Anchor 0.32.1
 - **Rust**: 1.89.0 (via `rust-toolchain.toml`)
 - **Network**: Localnet (dev), Devnet (staging)
-- **Version**: 0.19.0
+- **Version**: 0.20.0 (built, NOT deployed — gated on adversarial mini-review + the key-rotation redeploy, see `docs/KEY_ROTATION.md`)
 - **Binary**: 495,280 bytes / 3.448 SOL permanent rent
 - **Upgrade authority**: Squads V4 2-of-3 multisig PDA `BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC` (OPSEC-002 — see "Deploying an upgrade" below). `anchor deploy` no longer works for upgrades; the first deploy of a fresh program ID still uses `solana program deploy` from Alex Bot, then `set-upgrade-authority` to the Squads vault.
 
@@ -24,12 +24,13 @@ Anchor smart contract for contest escrow on Solana. Backend for Turf Monster (Ra
 
 ```
 programs/turf_vault/src/
-├── lib.rs              # Program entry — 18 thin wrappers (16 + pause/unpause)
+├── lib.rs              # Program entry — 19 thin wrappers (v0.20 re-added update_signers)
 ├── state.rs            # 6 account structs + 2 enums + multisig helpers
 ├── errors.rs           # 6000-6033 (some retired-but-kept for numbering stability)
 └── instructions/
     ├── mod.rs                  # Re-exports all instruction modules
     ├── initialize.rs           # Vault setup + register USDC + USDT in slots 0/1
+    ├── update_signers.rs       # RE-ADDED v0.20 (2-of-3) — rotate signers/threshold in place
     ├── register_currency.rs    # NEW (2-of-3) — add a currency to the registry
     ├── deactivate_currency.rs  # NEW (2-of-3) — flip a slot's active flag off
     ├── create_user_account.rs  # PDA per wallet: username + stats + seeds
@@ -57,6 +58,8 @@ scripts/squad-upgrade.js # Upgrade flow via Squad (propose → approve x2 → ex
 
 Files removed in v0.16: `deposit.rs`, `withdraw.rs`, `enter_contest_direct.rs`, `enter_contest_direct_with_token.rs`, `force_close_vault.rs`, `update_signers.rs`.
 
+> **`update_signers.rs` RE-ADDED in v0.20** (adapted to zero-copy VaultState). Removing it in v0.16 made the deployed signer set immutable — a leaked signer key forces a full redeploy instead of an on-chain rotation. v0.20 brings it back (2-of-3, signer-continuity guarded) so future compromise is a cheap on-chain tx. The redeploy that ships v0.20 (forced by the current Alex Bot key leak) is documented in `docs/KEY_ROTATION.md`.
+
 ## 2-of-3 Multisig System
 
 VaultState stores `signers: [Pubkey; 3]` and `threshold: u8`. Two authorization levels:
@@ -67,7 +70,8 @@ pub fn is_signer(&self, key: &Pubkey) -> bool {
     self.signers.contains(key)
 }
 
-// 2-of-3 for treasury ops (settle, force_close, update_signers)
+// 2-of-3 for treasury + governance ops (settle, cancel, sweep, pause/unpause,
+// register/deactivate_currency, update_signers)
 pub fn validate_multisig(&self, s1: &Pubkey, s2: &Pubkey) -> bool {
     s1 != s2 && self.is_signer(s1) && self.is_signer(s2)
 }
@@ -84,6 +88,7 @@ pub fn validate_multisig(&self, s1: &Pubkey, s2: &Pubkey) -> bool {
 | Instruction | Auth Level | Notes |
 |-------------|-----------|-------|
 | `initialize` | INIT_AUTHORITY | One-time. Mainnet builds pin to Alex's Phantom key as a compile-time constant. |
+| `update_signers` | **2-of-3** | Rotate signer pubkeys in place (no redeploy). Threshold is PINNED at 2-of-3 — this rotates signers only (`validate_multisig` ignores the threshold field). `validate_multisig(admin, cosigner)`. Continuity-guarded: no duplicate signers (6014), no default/zeroed slots + BOTH authorizing cosigners survive the rotation (`SignerContinuityRequired` 6017). Re-added v0.20 (adapted to zero-copy VaultState). |
 | `create_user_account` | Permissionless payer | Anyone can pay rent for any wallet's UserAccount PDA. Username required (≥ 3 chars). |
 | `set_username` | User signs | Wallet owner signs; v0.15.1 on-chain validation (reserved prefixes, ASCII, ≥3 chars). |
 | `create_season` | 1-of-3 | Any signer can create. Seed schedule immutable after create. |
@@ -199,7 +204,7 @@ All accounts use `#[derive(InitSpace)]`. Contest has `#[max_len(10)]` on `payout
 | 6014 | DuplicateSigner | Duplicate signer in array |
 | 6015 | EntryTokenAlreadyConsumed | Redeeming an already-consumed entry token |
 | 6016 | EntryTokenWrongOwner | Entry token owner ≠ the wallet entering |
-| 6017 | SignerContinuityRequired | `update_signers` drops all current cosigners |
+| 6017 | SignerContinuityRequired | `update_signers` new set drops EITHER authorizing cosigner (both must survive a 2-of-3 rotation), or contains a default/zeroed slot. UN-RETIRED in v0.20 (was reserved-but-unused v0.16–v0.19). |
 | 6018 | VaultPaused | Funds-touching op called while vault is paused (v0.15.0) |
 | 6019 | WithdrawDailyCapExceeded | RETIRED in v0.16 (no withdraw instruction); slot kept for numbering stability |
 | 6020 | UsernameReserved | Username uses a reserved prefix — admin, system, turf, vault, support, etc. (v0.15.1, audit C2) |
@@ -352,7 +357,9 @@ bin/rails solana:init_vault INIT=true SIGNERS=addr1,addr2,addr3 THRESHOLD=2
 - **USDC Mint**: `222Dcu2RgAXE3T8A4mGSG3kQyXaNjqePx7vva1RdWBN9` (test, 6 decimals)
 - **USDT Mint**: `9mxkN8KaVA8FFgDE2LEsn2UbYLPG8Xg9bf4V9MYYi8Ne` (test, 6 decimals)
 
-**Status**: **v0.18.0 deployed on devnet 2026-05-31 (slot 465782911)** via the Squads upgrade (v0.17.0 was slot 465778752). v0.17 added the derived on-chain time-lock — `Contest.lock_timestamp` (carved from `_reserved`, no size change) + `set_contest_lock_time` (1-of-3); `enter_contest{,_with_token}` reject once `Clock.unix_timestamp` passes it (`ContestLocked` 6034); retired `lock_contest`/`unlock_contest`. v0.18 adds `Contest.conclusion_timestamp` (also carved from `_reserved`, no size change) + `set_contest_conclusion_time` (1-of-3); once passed, the lock time is final (`set_contest_lock_time` then rejects with `ContestConcluded` 6035). IDL hash (re-pinned in turf-monster): `2d87b0935f5cd217b04a98153033c371d0b6f90018e9713acf3c3b44fe4db263`. 2-of-3 multisig for treasury ops; upgrade authority is the Squads V4 vault. Vault initialized with 3 signers (Alex Bot, Alex, Mason), threshold 2.
+**Status**: **v0.19.0 deployed on devnet 2026-06-02 (slot 466341566)** via the Squads upgrade (v0.18.0 was slot 465782911; v0.17.0 was 465778752). Verified by gold-standard compare 2026-06-02: the on-chain program binary (dumped, padding stripped) is byte-for-byte identical to a fresh `anchor build` of this source (HEAD `040ef3e`), and the freshly-built IDL hashes to `99d551001cd69468c8416292e150050c2d6307743c79a0c261211053004992c8` (== the `EXPECTED_IDL_HASH` pinned in turf-monster). **No account-layout / byte-size change from v0.18.** v0.19 is the audit-highs release: (#3) `settle_contest` binds each payout destination to the winner's canonical USDC ATA (`InvalidPayoutDestination` 6036); (#6) `settle_contest` requires the derived lock OR conclusion timestamp to have passed (reuses `ContestNotLocked` 6028); (#5) amending an ALREADY-PASSED `lock_timestamp` requires a distinct 2-of-3 cosigner (1-of-3 attempt → `Unauthorized` 6000), plus timestamp-validity guard (`InvalidTimestamp` 6037); (#9) `mint_entry_token` PDA seed is `source_ref_hash` asserted `== sha256(source_ref)` for true on-chain idempotency (`EntryTokenSeedMismatch` 6038). v0.17 added the derived on-chain time-lock — `Contest.lock_timestamp` (carved from `_reserved`, no size change) + `set_contest_lock_time` (1-of-3); `enter_contest{,_with_token}` reject once `Clock.unix_timestamp` passes it (`ContestLocked` 6034); retired `lock_contest`/`unlock_contest`. v0.18 added `Contest.conclusion_timestamp` (also carved from `_reserved`, no size change) + `set_contest_conclusion_time` (1-of-3); once passed, the lock time is final (`set_contest_lock_time` then rejects with `ContestConcluded` 6035). 2-of-3 multisig for treasury ops; upgrade authority is the Squads V4 vault. Vault initialized with 3 signers (Alex Bot, Alex, Mason), threshold 2.
+
+> **Devnet shakedown (2026-06-02, v0.19)** — all four audit fixes exercised end-to-end on devnet (Alex Bot admin + Mason cosigner, 2-of-3): #6 settle-before-lock rejected `ContestNotLocked` 6028; #3 settle to a non-winner same-mint ATA rejected `InvalidPayoutDestination` 6036; honest 2-of-3 settle after lock paid exactly the prize (5 USDC) prize_pool→winner-ATA and drained the pool (contest → Settled); #5 post-lock lock-time amend rejected 1-of-3 (`Unauthorized` 6000) and accepted 2-of-3. Note: devnet validator Clock lags wall time by tens of seconds — settle the contest a minute past `lock_timestamp`, not on the dot.
 
 > **Note**: the program was migrated off the orphaned ID `7Hy8GmJWPMdt6bx3VG4BLFnpNX9TBwkPt87W6bkHgr2J` on 2026-05-18 (its upgrade authority was lost). ~3.45 SOL of rent stays locked at the old program forever (devnet only).
 
@@ -400,7 +407,7 @@ The Rails app calls TurfVault through a `Solana::Vault` service layer:
 - **Seeds system** (v0.5.0, per-season schedule since v0.11.0): All four entry instructions (`enter_contest`, `enter_contest_direct`, `enter_contest_with_token`, `enter_contest_direct_with_token`) award seeds to the user's `UserAccount` PDA from the contest's bound `Season` — `season.seed_schedule[entry_num.min(4)]` (entries 5+ clamp to slot 4). Seeds are on-chain only — Rails reads them via `sync_balance` and derives levels in the UI (`level = seeds / 100 + 1`).
 - **Manual settlement**: No on-chain scoring — Rails computes results, admin submits final rankings
 - **force_close_vault**: Migration instruction that reads signers from raw bytes (avoids deserialization of old schema). Requires 2-of-3 cosign.
-- **update_signers** (v0.8.0): Rotate signers or change threshold. Requires 2-of-3 cosign.
+- **update_signers** (v0.8.0; REMOVED v0.16; RE-ADDED v0.20): Rotate signers IN PLACE. Threshold is PINNED at 2-of-3 — v0.20 rotates signer pubkeys only (the v0.15.x version took a threshold arg, but `validate_multisig` never reads `threshold`, so a configurable threshold was inert + misleading; the arg was dropped). Requires 2-of-3 cosign of the current signers. v0.16 removed the instruction entirely (immutable signer set → leaked key forces redeploy); v0.20 re-adds it adapted to the zero-copy `AccountLoader<VaultState>`. Signer-continuity guard (`SignerContinuityRequired` 6017): the new set keeps BOTH authorizing cosigners and no default/zeroed slot, so a 2-of-3 rotation can't brick the multisig.
 
 ## Code Style
 

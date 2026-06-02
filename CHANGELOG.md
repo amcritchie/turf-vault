@@ -2,6 +2,65 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.20.0] - 2026-06-02
+
+Re-adds a guarded `update_signers` instruction so the multisig signer set is
+mutable IN PLACE again. **No account-layout/byte-size change** — VaultState,
+Contest, EntryTokenAccount bodies are untouched (`update_signers` only writes
+the existing `signers: [Pubkey; 3]` field; `threshold` is left at its init
+value), so deployed PDAs need no re-init. The IDL DOES change (new instruction
++ the un-retired 6017 message), so turf-monster must re-pin `EXPECTED_IDL_HASH`
+from the freshly-built IDL.
+
+> **WHY / signer-set change — read LOUDLY.** v0.16 *removed* `update_signers`,
+> which made a deployed program's signer set immutable. A single compromised
+> signer key (the Alex Bot server key) therefore can't be rotated in place and
+> forces a full program redeploy + re-init + permanent rent loss on the old
+> program. v0.20 ships `update_signers` so future signer compromise is a cheap
+> 2-of-3 on-chain transaction, never a redeploy. The redeploy that introduces
+> v0.20 itself (forced by the current Alex Bot key leak) is documented in
+> `docs/KEY_ROTATION.md`.
+
+### Added
+
+- **`update_signers(new_signers: [Pubkey; 3])` (2-of-3).** Rotates one or more
+  signer pubkeys in place. **Threshold is PINNED at 2-of-3** — there is no
+  `new_threshold` parameter. `validate_multisig` never reads the `threshold`
+  field (it structurally requires two distinct signers), so a configurable
+  threshold was inert and misleading; the arg was dropped. Auth is
+  `validate_multisig(admin, cosigner)` — two DISTINCT current signers. Adapted
+  to the v0.16+ zero-copy `#[account(zero_copy(unsafe))]` VaultState
+  (`AccountLoader` + `load()` in the constraint, `load_mut()` for the write);
+  the v0.15.x original predated zero-copy. Logs old→new signers via `msg!`.
+
+### Safety (signer continuity — can't brick the multisig)
+
+- **No duplicate signers** (reuses 6014 `DuplicateSigner`).
+- **No default/zeroed slots** — a `Pubkey::default()` slot is rejected
+  (`SignerContinuityRequired` 6017).
+- **Continuity:** BOTH cosigners that authorized the update must remain in the
+  new set (`SignerContinuityRequired` 6017). Governance is 2-of-3, so a working
+  multisig needs TWO surviving cosignable keys — a "keep ≥1" guard would pass a
+  rotation to `[survivor, junk, junk]` that still bricks all governance (no
+  second key could ever cosign). Requiring both `admin` and `cosigner` to
+  survive guarantees two known-good keys remain. The intended "evict the leaked
+  bot key" rotation still passes (Alex + Mason cosign and both stay).
+
+### Errors
+
+- **6017 `SignerContinuityRequired` UN-RETIRED** (was reserved-but-unused in
+  v0.16–v0.19, marked "no `update_signers`"). Message updated to also cover the
+  default/zeroed-slot rejection. No code renumbering.
+
+### Coordination owed (FOLLOWS the redeploy/upgrade, not before)
+
+- solana-studio: `update_signers` transaction builder + IDL bump to 0.20.0.
+- turf-monster: re-pin `EXPECTED_IDL_HASH` from the freshly-built IDL (Squad
+  upgrades / fresh deploys don't update the on-chain IDL — use `target/idl`,
+  NOT `anchor idl fetch`); optional admin cosign UI for a signer rotation.
+- **NOT YET DEPLOYED.** Needs an adversarial mini-review before any deploy.
+  The rotation redeploy is gated on that review + operator go.
+
 ## [0.19.0] - 2026-05-31
 
 Security hardening from the 2026-05-31 adversarial audit (highs #3 / #5 / #6 / #9).

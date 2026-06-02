@@ -3,7 +3,7 @@
 // `#[program]` that delegate here.
 //
 // Instructions are grouped roughly by lifecycle:
-//   Vault setup & governance — initialize
+//   Vault setup & governance — initialize, update_signers
 //   Currency registry        — register_currency, deactivate_currency
 //   Pause control            — pause, unpause
 //   User accounts            — create_user_account, set_username
@@ -33,6 +33,7 @@ pub mod mint_entry_token;
 pub mod sweep_operator_revenue;
 pub mod pause;
 pub mod unpause;
+pub mod update_signers;
 
 pub use initialize::*;
 pub use register_currency::*;
@@ -52,3 +53,4 @@ pub use mint_entry_token::*;
 pub use sweep_operator_revenue::*;
 pub use pause::*;
 pub use unpause::*;
+pub use update_signers::*;

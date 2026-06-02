@@ -9,8 +9,9 @@ use anchor_lang::prelude::*;
 /// in the enum but no path emits them):
 ///   - 6011 AccountAlreadyMigrated (retired with v0.15.1)
 ///   - 6012 InvalidAccountData (was reserved)
-///   - 6017 SignerContinuityRequired (no `update_signers` in v0.16)
 ///   - 6019 WithdrawDailyCapExceeded (no more daily cap)
+///
+/// v0.20 un-retired 6017 SignerContinuityRequired — `update_signers` is back.
 ///
 /// v0.16 new codes start at 6023.
 #[error_code]
@@ -50,8 +51,8 @@ pub enum VaultError {
     EntryTokenAlreadyConsumed,                   // 6015
     #[msg("Entry token owner does not match the wallet entering the contest")]
     EntryTokenWrongOwner,                        // 6016
-    #[msg("New signer set must retain at least one current cosigner")]
-    SignerContinuityRequired,                    // 6017 — retired
+    #[msg("New signer set must retain BOTH authorizing cosigners (2-of-3) and contain no default/zeroed slots")]
+    SignerContinuityRequired,                    // 6017 — live again in v0.20 (update_signers)
     #[msg("Vault is paused — user-facing funds operations are temporarily disabled")]
     VaultPaused,                                 // 6018
     #[msg("Withdrawal would exceed the per-user daily cap")]

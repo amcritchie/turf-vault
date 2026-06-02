@@ -16,9 +16,9 @@
 //!   - **1-of-3 vault signer**: routine ops (create_contest,
 //!     set_contest_lock_time, close_contest, mint_entry_token, facilitate
 //!     entries).
-//!   - **2-of-3 vault signers**: treasury ops (register_currency,
+//!   - **2-of-3 vault signers**: treasury + governance ops (register_currency,
 //!     deactivate_currency, settle_contest, cancel_contest,
-//!     sweep_operator_revenue, pause, unpause).
+//!     sweep_operator_revenue, pause, unpause, update_signers).
 //!   - **User signature**: enter_contest{,_with_token}, set_username,
 //!     create_contest (as creator funding the prize pool).
 //!   - **INIT_AUTHORITY constant** (Alex Phantom key): one-time `initialize` call.
@@ -64,6 +64,21 @@ pub mod turf_vault {
         treasury_authority: Pubkey,
     ) -> Result<()> {
         handle_initialize(ctx, signers, threshold, treasury_authority)
+    }
+
+    /// Rotate the multisig signer set IN PLACE (no redeploy). 2-of-3 of the
+    /// CURRENT signers. Re-added in v0.20 so a compromised signer key (e.g. a
+    /// leaked Alex Bot server key) is a cheap on-chain rotation rather than a
+    /// full program redeploy. Threshold is PINNED at 2-of-3 — this rotates
+    /// signer pubkeys only (`validate_multisig` ignores the threshold field).
+    /// Enforces signer continuity (BOTH authorizing cosigners survive the
+    /// rotation; no default/zeroed slots — `SignerContinuityRequired` 6017)
+    /// and no duplicate signers (`DuplicateSigner` 6014).
+    pub fn update_signers(
+        ctx: Context<UpdateSigners>,
+        new_signers: [Pubkey; 3],
+    ) -> Result<()> {
+        handle_update_signers(ctx, new_signers)
     }
 
     // ── Currency registry ─────────────────────────────────────────────────
