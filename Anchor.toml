@@ -11,11 +11,13 @@ turf_vault = "EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ"
 [programs.devnet]
 turf_vault = "EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ"
 
-# Placeholder until the mainnet program keypair is generated — see
-# docs/MAINNET_LAUNCH.md §3. Must stay in sync with the mainnet
-# branch of declare_id! in programs/turf_vault/src/lib.rs.
+# Mainnet program keypair regenerated for the v0.20 key-rotation redeploy
+# (Phase 3, 2026-06-02). Secret in target/deploy/turf_vault-mainnet-v2-keypair.json
+# (the prior mnzow… keypair in turf_vault-mainnet-keypair.json is retained but
+# superseded — that program ID never deployed). Must stay in sync with the
+# mainnet branch of declare_id! in programs/turf_vault/src/lib.rs.
 [programs.mainnet]
-turf_vault = "11111111111111111111111111111111"
+turf_vault = "DaFv83yokwTz8msP9CzJ13eazSGk15NuUTxjkfzJzxMM"
 
 [registry]
 url = "https://api.apr.dev"

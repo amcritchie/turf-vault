@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>turf-vault — update_signers cosign (DEVNET)</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #0d1117; color: #c9d1d9; margin: 0; padding: 24px;
+    max-width: 880px; margin: 0 auto;
+  }
+  h1 { font-size: 18px; color: #f0f6fc; }
+  .devnet { color: #f85149; font-weight: bold; letter-spacing: 1px; }
+  .card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 16px; margin: 14px 0;
+  }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
+  .k { color: #8b949e; } .v { color: #c9d1d9; word-break: break-all; }
+  .old { color: #f85149; } .new { color: #3fb950; }
+  button {
+    font: inherit; background: #238636; color: #fff; border: 1px solid #2ea043;
+    border-radius: 6px; padding: 8px 16px; cursor: pointer; margin: 4px 4px 4px 0;
+  }
+  button:disabled { background: #21262d; color: #6e7681; border-color: #30363d; cursor: not-allowed; }
+  button.secondary { background: #21262d; border-color: #30363d; color: #c9d1d9; }
+  #log {
+    background: #010409; border: 1px solid #30363d; border-radius: 6px;
+    padding: 12px; white-space: pre-wrap; word-break: break-all;
+    min-height: 80px; max-height: 360px; overflow-y: auto; font-size: 12px;
+  }
+  .ok { color: #3fb950; } .err { color: #f85149; } .warn { color: #d29922; } .info { color: #58a6ff; }
+  a { color: #58a6ff; }
+</style>
+</head>
+<body>
+  <h1>turf-vault · <code>update_signers</code> cosign · <span class="devnet">DEVNET</span></h1>
+
+  <div class="card">
+    <div class="row"><span class="k">program</span><span class="v">EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ</span></div>
+    <div class="row"><span class="k">vault_state PDA</span><span class="v">J7b5g9uS5M2Nog1Ly1UATXTDMtXdpXK3JffRAHXGHkK2</span></div>
+    <div class="row"><span class="k">old signers</span><span class="v old">[F6f8…KzhZ, 7ZDJ…59Tcr, Cyt…qWjrR]</span></div>
+    <div class="row"><span class="k">new signers</span><span class="v new">[8K81…RaRYd, 7ZDJ…59Tcr, Cyt…qWjrR]</span></div>
+    <div class="row"><span class="k">admin (server)</span><span class="v">Mason · Cyt…qWjrR</span></div>
+    <div class="row"><span class="k">cosigner (you)</span><span class="v">Alex · 7ZDJ…59Tcr · Phantom</span></div>
+    <div class="row"><span class="k">fee payer</span><span class="v">Alex · 7ZDJ…59Tcr</span></div>
+  </div>
+
+  <div>
+    <button id="btnConnect">1 · Connect Phantom</button>
+    <button id="btnSim" disabled>2 · Simulate</button>
+    <button id="btnSend" disabled>3 · Sign &amp; Send</button>
+  </div>
+
+  <div id="log" class="card"></div>
+
+<script type="module">
+import {
+  Connection, PublicKey, VersionedTransaction,
+} from "https://esm.sh/@solana/web3.js@1.98.4";
+
+const EXPECTED = "7ZDJp7FUHhuceAqcW9CHe81hCiaMTjgWAXfprBM59Tcr"; // Alex Phantom
+const PROGRAM  = "EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ";
+const VAULT    = "J7b5g9uS5M2Nog1Ly1UATXTDMtXdpXK3JffRAHXGHkK2";
+
+// All RPC goes through the local proxy (Helius devnet URL stays server-side).
+const conn = new Connection(location.origin + "/rpc", "confirmed");
+
+const logEl = document.getElementById("log");
+function log(msg, cls = "") {
+  const ts = new Date().toLocaleTimeString();
+  logEl.innerHTML += `<span class="${cls}">[${ts}] ${msg}</span>\n`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+const btnConnect = document.getElementById("btnConnect");
+const btnSim     = document.getElementById("btnSim");
+const btnSend    = document.getElementById("btnSend");
+
+let provider = null;
+
+function getProvider() {
+  const p = window.phantom?.solana || (window.solana?.isPhantom ? window.solana : null);
+  if (!p) throw new Error("Phantom not found. Install the Phantom extension and reload.");
+  return p;
+}
+
+btnConnect.onclick = async () => {
+  try {
+    provider = getProvider();
+    const resp = await provider.connect();
+    const pk = resp.publicKey.toBase58();
+    log("Phantom connected: " + pk, "info");
+    if (pk !== EXPECTED) {
+      log(`REFUSED — connected wallet ${pk} is NOT the cosigner 7ZDJ…59Tcr. Switch Phantom to Alex's account and reconnect.`, "err");
+      btnSim.disabled = true; btnSend.disabled = true;
+      return;
+    }
+    // assert devnet endpoint is reachable
+    const slot = await conn.getSlot();
+    log("RPC ok (devnet slot " + slot + ")", "ok");
+    log("Wallet asserted == 7ZDJ…59Tcr ✓", "ok");
+    btnSim.disabled = false;
+  } catch (e) {
+    log("connect failed: " + e.message, "err");
+  }
+};
+
+// Fetch a FRESH Mason-partial-signed tx from the local builder (current blockhash).
+async function fetchFreshTx() {
+  const r = await fetch("/build", { method: "POST" });
+  if (!r.ok) throw new Error("/build failed: " + r.status + " " + (await r.text()));
+  const { txBase64, blockhash, lastValidBlockHeight } = await r.json();
+  const tx = VersionedTransaction.deserialize(
+    Uint8Array.from(atob(txBase64), (c) => c.charCodeAt(0))
+  );
+  return { tx, blockhash, lastValidBlockHeight, txBase64 };
+}
+
+btnSim.onclick = async () => {
+  btnSim.disabled = true;
+  try {
+    log("building fresh tx for simulation…", "info");
+    const { tx } = await fetchFreshTx();
+    const keys = tx.message.staticAccountKeys.map((k) => k.toBase58());
+    log("fee payer (acct[0]): " + keys[0] + (keys[0] === EXPECTED ? "  ✓ 7ZDJ" : "  ✗ NOT 7ZDJ"), keys[0] === EXPECTED ? "ok" : "err");
+    tx.signatures.forEach((s, i) => {
+      const empty = s.every((b) => b === 0);
+      log(`  sig[${i}] ${keys[i].slice(0, 8)}…  ${empty ? "EMPTY" : "PRESENT"}`, empty ? "warn" : "ok");
+    });
+    log("simulating (sigVerify:false)…", "info");
+    const sim = await conn.simulateTransaction(tx, {
+      sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed",
+    });
+    (sim.value.logs || []).forEach((l) => {
+      const cls = /Old:.*->.*New:/.test(l) ? "ok" : "";
+      log("  " + l, cls);
+    });
+    if (sim.value.err) {
+      log("SIM err: " + JSON.stringify(sim.value.err) + " — DO NOT SEND.", "err");
+      btnSend.disabled = true;
+    } else {
+      log("SIM err: null ✓  — rotation simulates clean. Ready to Sign & Send.", "ok");
+      btnSend.disabled = false;
+    }
+  } catch (e) {
+    log("simulate failed: " + e.message, "err");
+  } finally {
+    btnSim.disabled = false;
+  }
+};
+
+btnSend.onclick = async () => {
+  btnSend.disabled = true;
+  try {
+    log("building fresh tx (current blockhash) for signing…", "info");
+    const { tx, blockhash, lastValidBlockHeight } = await fetchFreshTx();
+
+    // signTransaction: Phantom adds 7ZDJ's sig and PRESERVES Mason's partial sig.
+    // (We deliberately do NOT use signAndSendTransaction — some Phantom builds
+    //  re-serialize and can drop pre-existing partial sigs. signTransaction +
+    //  proxy-broadcast is the deterministic path for a 2-sig partial tx.)
+    log("requesting Phantom signature (7ZDJ)…", "info");
+    const signed = await provider.signTransaction(tx);
+
+    // sanity: BOTH sig slots must now be present
+    const keys = signed.message.staticAccountKeys.map((k) => k.toBase58());
+    let allPresent = true;
+    signed.signatures.forEach((s, i) => {
+      const empty = s.every((b) => b === 0);
+      if (empty) allPresent = false;
+      log(`  sig[${i}] ${keys[i].slice(0, 8)}…  ${empty ? "EMPTY ✗" : "PRESENT ✓"}`, empty ? "err" : "ok");
+    });
+    if (!allPresent) {
+      log("Phantom dropped a signature (likely Mason's partial sig). ABORTING broadcast.", "err");
+      log("Fallback: this means the signAndSendTransaction footgun hit signTransaction too — escalate to Jasper.", "warn");
+      btnSend.disabled = false;
+      return;
+    }
+
+    log("broadcasting via proxy…", "info");
+    const raw = signed.serialize();
+    const sig = await conn.sendRawTransaction(raw, { skipPreflight: false, preflightCommitment: "confirmed" });
+    log("sent: " + sig, "info");
+    log("confirming…", "info");
+    await conn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+    log("CONFIRMED ✓", "ok");
+    log(`signature: ${sig}`, "ok");
+    const url = `https://explorer.solana.com/tx/${sig}?cluster=devnet`;
+    logEl.innerHTML += `<span class="ok">[explorer] </span><a href="${url}" target="_blank">${url}</a>\n`;
+    logEl.scrollTop = logEl.scrollHeight;
+    log("Rotation broadcast. Tell the operator; runbook re-decodes VaultState to confirm [8K81, 7ZDJ, Cyt] with F6f8 GONE.", "info");
+  } catch (e) {
+    log("send failed: " + (e.message || JSON.stringify(e)), "err");
+    btnSend.disabled = false;
+  }
+};
+</script>
+</body>
+</html>

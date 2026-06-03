@@ -44,7 +44,7 @@ use instructions::*;
 declare_id!("EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ");
 
 #[cfg(feature = "mainnet")]
-declare_id!("11111111111111111111111111111111"); // PLACEHOLDER — replace per docs/MAINNET_LAUNCH.md §3
+declare_id!("DaFv83yokwTz8msP9CzJ13eazSGk15NuUTxjkfzJzxMM");
 
 #[program]
 pub mod turf_vault {

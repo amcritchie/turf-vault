@@ -13,15 +13,15 @@
   "_v016_redeploy": "redeployed to fresh program ID 2026-05-27; old Dx8u\u2026 orphaned",
   "_v016_redeploy_2": "devnet redeploy #2 on 2026-05-27 \u2014 Season 1 canonical schedule",
 
-  "_mainnet": "Placeholders \u2014 the operator replaces these per docs/MAINNET_LAUNCH.md \u00a73 \u2192 \u00a75. Until then, scripts/squad-upgrade.js must refuse any --network mainnet invocation that still sees the placeholder.",
+  "_mainnet": "v0.20 KEY-ROTATION REDEPLOY (Phase 3, 2026-06-02): FRESH program DaFv\u2026 + NEW Squads (multisig 4H3f\u2026 / vault Bk9s\u2026, members [8K81 new alex_bot, 7ZDJ alex, mason] thr 2, leaked F6f8 ABSENT). Supersedes the first-launch placeholders (mnzow program / 9dCLM\u2009/\u200983BX Squads / F6f8 bot) \u2014 that program never deployed. NOT YET DEPLOYED: deploy/funding/init are operator-gated irreversible steps (docs/KEY_ROTATION.md \u00a72-\u00a75).",
   "mainnet": {
     "network": "mainnet-beta",
-    "programId": "11111111111111111111111111111111",
-    "multisigPda": "11111111111111111111111111111111",
-    "vaultPda": "11111111111111111111111111111111",
+    "programId": "DaFv83yokwTz8msP9CzJ13eazSGk15NuUTxjkfzJzxMM",
+    "multisigPda": "4H3fP3otjMtupk1DQDjKXYY1dWjT6LNM4H4ZWZ1XcKSX",
+    "vaultPda": "Bk9sS7iiSRL18vuo2KVzkeGw7EekKqxMCjrdoyGGdJm",
     "threshold": 2,
     "members": {
-      "alex_bot": "F6f8h5yynbnkgWvU5abQx3RJxJpe8EoQmeFBuNKdKzhZ",
+      "alex_bot": "8K81w4e6UcB7TiANhM9N8sAgijJvTxxybRi8AENRaRYd",
       "alex": "7ZDJp7FUHhuceAqcW9CHe81hCiaMTjgWAXfprBM59Tcr",
       "mason": "CytJS23p1zCM2wvUUngiDePtbMB484ebD7bK4nDqWjrR"
     }
