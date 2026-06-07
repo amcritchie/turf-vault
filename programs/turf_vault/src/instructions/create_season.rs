@@ -47,12 +47,14 @@ pub fn handle_create_season(
     season_id: u32,
     name: [u8; 32],
     seed_schedule: [u64; 5],
+    quest_seeds: [u64; 16],
     start_at: i64,
 ) -> Result<()> {
     let season = &mut ctx.accounts.season;
     season.season_id = season_id;
     season.name = name;
     season.seed_schedule = seed_schedule;
+    season.quest_seeds = quest_seeds; // v0.23 — per-quest-kind reward, indexed by seed_grant_kind
     season.start_at = start_at;
     season.created_at = Clock::get()?.unix_timestamp;
     season.bump = ctx.bumps.season;

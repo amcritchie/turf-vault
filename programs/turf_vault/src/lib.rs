@@ -136,9 +136,10 @@ pub mod turf_vault {
         season_id: u32,
         name: [u8; 32],
         seed_schedule: [u64; 5],
+        quest_seeds: [u64; 16],
         start_at: i64,
     ) -> Result<()> {
-        handle_create_season(ctx, season_id, name, seed_schedule, start_at)
+        handle_create_season(ctx, season_id, name, seed_schedule, quest_seeds, start_at)
     }
 
     // ── Contest lifecycle ─────────────────────────────────────────────────
@@ -248,6 +249,23 @@ pub mod turf_vault {
         source_ref_hash: [u8; 32],
     ) -> Result<()> {
         handle_mint_entry_token(ctx, source, source_ref, source_ref_hash)
+    }
+
+    // ── Seed grants ───────────────────────────────────────────────────────
+
+    /// Credit a fixed `amount` of loyalty seeds into a user's UserAccount,
+    /// OUTSIDE the entry flow (Rails "quest" bonuses: first username change,
+    /// newsletter join, friend-invite-entered). 1-of-3 vault signer; the user
+    /// does not sign. Idempotent per (user, kind[, invitee]) via the SeedGrant
+    /// init-guard PDA. `kind` ∈ seed_grant_kind::*; `invitee` is the friend's
+    /// wallet for INVITE_FRIEND and Pubkey::default() otherwise.
+    pub fn grant_seeds(
+        ctx: Context<GrantSeeds>,
+        amount: u64,
+        kind: u8,
+        invitee: Pubkey,
+    ) -> Result<()> {
+        handle_grant_seeds(ctx, amount, kind, invitee)
     }
 
     // ── Treasury ──────────────────────────────────────────────────────────

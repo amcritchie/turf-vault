@@ -340,6 +340,7 @@ pub struct Season {
     pub season_id: u32,
     pub name: [u8; 32],          // UTF-8 padded with 0x00
     pub seed_schedule: [u64; 5], // entries 0-4; entry index 5+ clamps to slot 4
+    pub quest_seeds: [u64; 16],  // v0.23: reward per seed_grant_kind (0 username, 1 newsletter, 2 invite, 3 chat, 4-15 future)
     pub start_at: i64,           // unix timestamp
     pub created_at: i64,         // unix timestamp
     pub bump: u8,
@@ -350,10 +351,60 @@ impl Season {
     ///   season_id:      u32          4
     ///   name:           [u8; 32]    32
     ///   seed_schedule:  [u64; 5]    40
+    ///   quest_seeds:    [u64; 16]  128   (v0.23 — reward per seed_grant_kind)
     ///   start_at:       i64          8
     ///   created_at:     i64          8
     ///   bump:           u8           1
-    /// Subtotal data: 93
-    /// + 8 discriminator = 101
-    pub const LEN: usize = 8 + 4 + 32 + 40 + 8 + 8 + 1;
+    /// Subtotal data: 221
+    /// + 8 discriminator = 229
+    pub const LEN: usize = 8 + 4 + 32 + 40 + 128 + 8 + 8 + 1;
+}
+
+/// Discriminator for a standalone seed grant (quest bonus). Part of the
+/// SeedGrant idempotency-guard PDA seed.
+pub mod seed_grant_kind {
+    /// One-time bonus for a user's FIRST manual username change.
+    pub const USERNAME_FIRST_CHANGE: u8 = 0;
+    /// One-time bonus for joining the email newsletter.
+    pub const NEWSLETTER_JOIN: u8 = 1;
+    /// Per-invitee bonus when an invited friend enters a contest.
+    pub const INVITE_FRIEND: u8 = 2;
+    /// One-time bonus for a user's FIRST contest-chat message (v0.23).
+    pub const CHAT_MESSAGE: u8 = 3;
+    /// Upper bound for grant_seeds kind validation (v0.23). Flexible so new
+    /// quests (kinds 4..=15) need only a Rails constant — never a redeploy.
+    /// Each kind also indexes Season.quest_seeds for its on-chain reward amount.
+    pub const MAX_SEED_GRANT_KIND: u8 = 15;
+}
+
+/// Upper bound on a single `grant_seeds` amount. The largest quest reward is
+/// 45 (invite); 1000 leaves headroom for future quests while capping a leaked
+/// 1-of-3 key's per-call blast radius.
+pub const MAX_GRANT_SEEDS: u64 = 1_000;
+
+/// SeedGrant: a once-only guard + audit record for a standalone admin seed
+/// grant (quest bonus). Its EXISTENCE is the idempotency lock — `init` collides
+/// on a repeat grant of the same (user, kind[, invitee]), so the TX fails.
+///
+/// PDA seeds: [b"seed_grant", user_wallet, kind, invitee]
+///   - USERNAME_FIRST_CHANGE / NEWSLETTER_JOIN: invitee = Pubkey::default()
+///     → once-EVER per user.
+///   - INVITE_FRIEND: invitee = the friend's wallet → once-per-invitee.
+#[account]
+#[derive(InitSpace)]
+pub struct SeedGrant {
+    /// Recipient wallet (the UserAccount whose seeds were credited).
+    pub user: Pubkey,         // 32
+    /// seed_grant_kind::{USERNAME_FIRST_CHANGE, NEWSLETTER_JOIN, INVITE_FRIEND}.
+    pub kind: u8,             //  1
+    /// The invited friend's wallet for INVITE_FRIEND; Pubkey::default() otherwise.
+    pub invitee: Pubkey,      // 32
+    /// Seeds credited by this grant.
+    pub amount: u64,          //  8
+    /// Unix timestamp (chain Clock) at grant time.
+    pub granted_at: i64,      //  8
+    /// PDA bump.
+    pub bump: u8,             //  1
+    /// Reserved padding for forward-compat.
+    pub _reserved: [u8; 16],  // 16
 }

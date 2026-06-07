@@ -2,6 +2,35 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.24.0] - 2026-06-07
+
+Quest seed economy — admin-signed quest bonuses + on-chain per-quest reward
+config. One consolidated release of the grant_seeds + flexible-kind +
+Season.quest_seeds work on top of v0.20. (Folds in the interim v0.22/v0.23 dev
+iterations; the v0.21 on-chain Contest name/slug was dropped — parked, never
+shipped — so `create_contest` is unchanged from v0.20.)
+
+### grant_seeds — admin-signed quest seed grants
+- `grant_seeds(amount, kind, invitee)` — a 1-of-3 admin mints a quest bonus
+  straight onto a wallet's `UserAccount.seeds`, outside the entry flow. Idempotent
+  per `(user_wallet, kind, invitee)` via an `init`-once `SeedGrant` guard PDA, so
+  each bonus mints once-ever (safe for Sidekiq retries).
+- `kind` accepts any `0..=MAX_SEED_GRANT_KIND` (15), so a new quest needs only a
+  Rails kind constant — never another redeploy. Named kinds: 0 username-first-change,
+  1 newsletter-join, 2 invite-friend, 3 chat-message. Invite (2) carries a real
+  invitee (per-friend guard); the others forbid one. `amount` ∈ 1..=`MAX_GRANT_SEEDS`
+  (1000). Errors: `InvalidSeedGrantKind` / `InvalidSeedGrantInvitee` / `SeedGrantAmountInvalid`.
+
+### Season — per-quest reward amounts on-chain
+- `Season` gains `quest_seeds: [u64; 16]` (indexed by `seed_grant_kind`): each
+  quest's reward lives on-chain next to the entry `seed_schedule`, so the whole
+  seed economy is tuned in one place. `create_season` takes it. Season grows
+  101 → 229 bytes; mint a fresh Season (immutable model, no migration).
+
+### Account layout
+- Net-new `SeedGrant` PDA + `Season` grows (+`quest_seeds`). VaultState /
+  UserAccount / Contest / ContestEntry / EntryTokenAccount bodies untouched.
+
 ## [0.20.0] - 2026-06-02
 
 Re-adds a guarded `update_signers` instruction so the multisig signer set is

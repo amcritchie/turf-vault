@@ -99,4 +99,20 @@ pub enum VaultError {
     InvalidTimestamp,                            // 6037
     #[msg("Entry token seed hash does not match sha256(source_ref)")]
     EntryTokenSeedMismatch,                      // 6038
+
+    // ── 6039+: new in v0.21 (on-chain name/slug) ──────────────────────────
+    #[msg("Contest name exceeds the 96-byte on-chain limit")]
+    ContestNameTooLong,                          // 6039
+    #[msg("Contest slug exceeds the 64-byte on-chain limit")]
+    ContestSlugTooLong,                          // 6040
+    #[msg("Stored slug does not hash to contest_id: sha256(slug) != contest_id")]
+    ContestSlugMismatch,                         // 6041
+
+    // ── 6042+: new for grant_seeds (quest seed bonuses) ───────────────────
+    #[msg("Seed grant kind is not one of the known quest kinds")]
+    InvalidSeedGrantKind,                        // 6042
+    #[msg("Invite grants require a non-default invitee; non-invite grants forbid one")]
+    InvalidSeedGrantInvitee,                     // 6043
+    #[msg("Seed grant amount must be greater than 0 and at most MAX_GRANT_SEEDS")]
+    SeedGrantAmountInvalid,                      // 6044
 }
