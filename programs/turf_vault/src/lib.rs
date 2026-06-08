@@ -34,9 +34,9 @@ pub mod instructions;
 use instructions::*;
 
 // Cluster-gated declare_id!. Devnet/localnet builds compile-time bind to the
-// current devnet v0.16 program. Mainnet builds resolve to a placeholder until
-// the operator generates the mainnet program keypair and edits this file per
-// docs/MAINNET_LAUNCH.md §3.
+// current devnet program. Mainnet builds (--features mainnet) bind to the
+// v0.20 key-rotation program ID DaFv... (fresh Squads upgrade authority; see
+// docs/KEY_ROTATION.md / docs/MAINNET_LAUNCH.md section 3).
 //
 // Anchor.toml's [programs.*] entries are advisory (CLI tooling) and MUST
 // agree with whichever declare_id! the active feature set selects.
@@ -44,7 +44,7 @@ use instructions::*;
 declare_id!("EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ");
 
 #[cfg(feature = "mainnet")]
-declare_id!("11111111111111111111111111111111"); // PLACEHOLDER — replace per docs/MAINNET_LAUNCH.md §3
+declare_id!("DaFv83yokwTz8msP9CzJ13eazSGk15NuUTxjkfzJzxMM");
 
 #[program]
 pub mod turf_vault {

@@ -1,29 +1,14 @@
 {
-  "_comment": "OPSEC-002: turf-vault's program upgrade authority is a Squads V4 2-of-3 multisig as of 2026-05-19 (devnet). anchor deploy no longer works \u2014 upgrades go through scripts/squad-upgrade.js.",
-  "network": "devnet",
-  "programId": "EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ",
-  "multisigPda": "7nRuVw3VZFC6z85tYVDitPnaUHZCkqLpJRSTBNtPmtZB",
-  "vaultPda": "BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC",
+  "_comment": "OPSEC-002 / v0.20 KEY ROTATION: turf-vault MAINNET program upgrade authority is a Squads V4 2-of-3 multisig. anchor deploy does not work for upgrades -- they go through scripts/squad-upgrade.js, which reads ONLY these TOP-LEVEL fields (network/programId/multisigPda/vaultPda). This is the feat/v0.24-mainnet branch: the top-level IS the live mainnet-beta config. Signer set: 8K81 Alex Bot (rotated), 7ZDJ Alex, Cyt Mason; threshold 2. The leaked F6f8 bot key is fully evicted. squad-upgrade.js loads the signing keys from ALEX_BOT_KEY / MASON_KEY env vars (base58), NOT from the members object below -- members is documentation only.",
+  "network": "mainnet-beta",
+  "programId": "DaFv83yokwTz8msP9CzJ13eazSGk15NuUTxjkfzJzxMM",
+  "multisigPda": "4H3fP3otjMtupk1DQDjKXYY1dWjT6LNM4H4ZWZ1XcKSX",
+  "vaultPda": "Bk9sS7iiSRL18vuo2KVzkeGw7EekKqxMCjrdoyGGdJm",
   "threshold": 2,
   "members": {
-    "alex_bot": "F6f8h5yynbnkgWvU5abQx3RJxJpe8EoQmeFBuNKdKzhZ",
+    "alex_bot": "8K81w4e6UcB7TiANhM9N8sAgijJvTxxybRi8AENRaRYd",
     "alex": "7ZDJp7FUHhuceAqcW9CHe81hCiaMTjgWAXfprBM59Tcr",
     "mason": "CytJS23p1zCM2wvUUngiDePtbMB484ebD7bK4nDqWjrR"
   },
-  "_v016_redeploy": "redeployed to fresh program ID 2026-05-27; old Dx8u\u2026 orphaned",
-  "_v016_redeploy_2": "devnet redeploy #2 on 2026-05-27 \u2014 Season 1 canonical schedule",
-
-  "_mainnet": "Placeholders \u2014 the operator replaces these per docs/MAINNET_LAUNCH.md \u00a73 \u2192 \u00a75. Until then, scripts/squad-upgrade.js must refuse any --network mainnet invocation that still sees the placeholder.",
-  "mainnet": {
-    "network": "mainnet-beta",
-    "programId": "11111111111111111111111111111111",
-    "multisigPda": "11111111111111111111111111111111",
-    "vaultPda": "11111111111111111111111111111111",
-    "threshold": 2,
-    "members": {
-      "alex_bot": "F6f8h5yynbnkgWvU5abQx3RJxJpe8EoQmeFBuNKdKzhZ",
-      "alex": "7ZDJp7FUHhuceAqcW9CHe81hCiaMTjgWAXfprBM59Tcr",
-      "mason": "CytJS23p1zCM2wvUUngiDePtbMB484ebD7bK4nDqWjrR"
-    }
-  }
+  "_devnet_reference": "NOT used by this mainnet branch (squad-upgrade.js reads only the top-level fields above). Devnet config lives on the devnet branches; recorded here for provenance: programId EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ, multisigPda 7nRuVw3VZFC6z85tYVDitPnaUHZCkqLpJRSTBNtPmtZB, vaultPda BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC, members 8K81/7ZDJ/Cyt (F6f8 evicted 2026-06-06), threshold 2."
 }
