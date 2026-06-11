@@ -15,7 +15,8 @@
 //! Auth model:
 //!   - **1-of-3 vault signer**: routine ops (create_contest,
 //!     set_contest_lock_time, close_contest, mint_entry_token, facilitate
-//!     entries).
+//!     entries, co-sign the v0.25 admin username flows'
+//!     reserved-prefix waiver).
 //!   - **2-of-3 vault signers**: treasury + governance ops (register_currency,
 //!     deactivate_currency, settle_contest, cancel_contest,
 //!     sweep_operator_revenue, pause, unpause, update_signers).
@@ -125,6 +126,29 @@ pub mod turf_vault {
     /// Set / overwrite the username on a UserAccount. Owner signs.
     pub fn set_username(ctx: Context<SetUsername>, username: [u8; 32]) -> Result<()> {
         handle_set_username(ctx, username)
+    }
+
+    /// `create_user_account` with an admin-authorized reserved-prefix waiver
+    /// (v0.25). Permissionless payer + a required 1-of-3 vault-signer
+    /// co-signature (`Unauthorized` 6000 otherwise). Charset + min-length
+    /// are still enforced — only the reserved-prefix branch is waived.
+    pub fn admin_create_user_account(
+        ctx: Context<AdminCreateUserAccount>,
+        wallet: Pubkey,
+        username: [u8; 32],
+    ) -> Result<()> {
+        handle_admin_create_user_account(ctx, wallet, username)
+    }
+
+    /// `set_username` with an admin-authorized reserved-prefix waiver
+    /// (v0.25). Owner signs (consenting) + a required 1-of-3 vault-signer
+    /// co-signature (`Unauthorized` 6000 otherwise). Charset + min-length
+    /// are still enforced — only the reserved-prefix branch is waived.
+    pub fn admin_set_username(
+        ctx: Context<AdminSetUsername>,
+        username: [u8; 32],
+    ) -> Result<()> {
+        handle_admin_set_username(ctx, username)
     }
 
     // ── Seasons ───────────────────────────────────────────────────────────

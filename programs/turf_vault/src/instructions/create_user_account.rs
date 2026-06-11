@@ -40,7 +40,21 @@ pub fn handle_create_user_account(
     // claim "admin" or inject control chars.
     validate_username(&username)?;
 
-    let user = &mut ctx.accounts.user_account;
+    init_user_account(&mut ctx.accounts.user_account, wallet, username, ctx.bumps.user_account);
+
+    msg!("User account created for: {}", wallet);
+    Ok(())
+}
+
+/// Shared field initialization for a freshly-allocated UserAccount PDA.
+/// Used by `create_user_account` and `admin_create_user_account` (v0.25)
+/// so the two entry points can't drift.
+pub fn init_user_account(
+    user: &mut UserAccount,
+    wallet: Pubkey,
+    username: [u8; 32],
+    bump: u8,
+) {
     user.wallet = wallet;
     user.username = username;
     user.seeds = 0;
@@ -48,9 +62,6 @@ pub fn handle_create_user_account(
     user.wins = 0;
     user.cashes = 0;
     user.total_won = 0;
-    user.bump = ctx.bumps.user_account;
+    user.bump = bump;
     user._reserved = [0; 32];
-
-    msg!("User account created for: {}", wallet);
-    Ok(())
 }
