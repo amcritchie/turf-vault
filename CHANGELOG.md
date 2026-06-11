@@ -2,6 +2,58 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.25.0] - 2026-06-10
+
+Admin-authorized username flows: a 1-of-3 vault-signer co-signature can waive
+ONLY the reserved-prefix branch of the username validity bar (v0.15.1, audit
+C2). Motivation: the operator's own "Turf Monster" house account (wallet
+`BLSBw8fXHzZc5pbaYCKMpMSsrtXBTbWXpUPVzMrXx9oo`) needs username `turf`, which
+starts with a reserved prefix, so plain `create_user_account` fails with
+`UsernameReserved` 6020 on mainnet. Privilege is the vault-signer co-signature
+(`vault_state.is_signer`), NOT membership of the target wallet — the house
+wallet is a 4th admin that is not (and will not be) a vault signer.
+
+**No account-layout/byte-size change, no new error codes** (reuses
+`Unauthorized` 6000). The IDL DOES change (two new instructions), so
+turf-monster must re-pin `EXPECTED_IDL_HASH` from the freshly-built IDL when
+this ships. Rides the next mainnet upgrade window (Squads 2-of-3 — `anchor
+deploy` is dead; `scripts/squad-upgrade.js`).
+
+### Added
+
+- **`admin_create_user_account(wallet, username)`** — same semantics as
+  `create_user_account` (permissionless payer pays rent, target wallet gets
+  the PDA, wallet does NOT sign) PLUS a required `admin: Signer` validated
+  `vault_state.is_signer(admin.key())` (else `Unauthorized` 6000). The plain
+  variant doesn't reference `vault_state`; the admin variant adds it
+  read-only. Reserved-prefix check waived; charset (printable ASCII) and
+  min-length (3) still enforced.
+- **`admin_set_username(username)`** — same semantics as `set_username`
+  (the account OWNER signs — consenting) PLUS the same required vault-signer
+  `admin` co-signer and the same prefix-only waiver.
+
+### Changed
+
+- **`validate_username` split** (`instructions/set_username.rs`) into
+  `validate_username_charset_len` + `validate_username_prefix`;
+  `validate_username` now composes the two, so plain-path behavior is
+  byte-for-byte identical and no validation logic is duplicated. The admin
+  variants call `validate_username_charset_len` only.
+- **`init_user_account` helper** extracted in
+  `instructions/create_user_account.rs` — shared field initialization for the
+  plain + admin create paths so the two entry points can't drift.
+
+### Tests
+
+- New `admin username flows (v0.25)` block in `tests/turf_vault.ts`:
+  vault-signer co-sign accepted (reserved `turf-monster` / `turf` land on
+  both admin paths), non-signer admin rejected with 6000 on both, reserved
+  names still rejected with 6020 on both plain paths, charset/min-length
+  still enforced on the admin paths, and the owner signature still required
+  for `admin_set_username`. NOTE: the suite as a whole is still the v0.15.1
+  suite (references retired `deposit`/`withdraw`/`balance`) and does not run
+  against the current surface — pre-existing state, see CLAUDE.md "Testing".
+
 ## [0.24.0] - 2026-06-07
 
 Quest seed economy — admin-signed quest bonuses + on-chain per-quest reward

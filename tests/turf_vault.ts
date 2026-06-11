@@ -302,6 +302,204 @@ describe("turf_vault", () => {
     });
   });
 
+  // v0.25: admin-authorized username flows. A 1-of-3 vault-signer co-signature
+  // waives ONLY the reserved-prefix check (audit C2) — charset + min-length
+  // stay enforced. Privilege = vault_state.is_signer(admin), NOT membership of
+  // the target wallet (the operator house wallet is NOT a vault signer).
+  describe("admin username flows (v0.25)", () => {
+    // The operator house wallet — gets a reserved "turf*" username via the
+    // admin path. Never a vault signer.
+    let houseWallet: Keypair;
+    let houseAccountPda: PublicKey;
+
+    before(() => {
+      houseWallet = Keypair.generate();
+      [houseAccountPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("user"), houseWallet.publicKey.toBuffer()],
+        program.programId
+      );
+    });
+
+    it("plain create_user_account still rejects a reserved username (turf-monster)", async () => {
+      try {
+        await program.methods
+          .createUserAccount(houseWallet.publicKey, makeUsername("turf-monster"))
+          .accountsStrict({
+            payer: admin.publicKey,
+            userAccount: houseAccountPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+        expect.fail("should have rejected reserved prefix on the plain path");
+      } catch (err: any) {
+        expect(err.toString()).to.match(/UsernameReserved/i); // 6020
+      }
+    });
+
+    it("rejects admin_create_user_account when the co-signer is not a vault signer", async () => {
+      try {
+        await program.methods
+          .adminCreateUserAccount(houseWallet.publicKey, makeUsername("turf-monster"))
+          .accountsStrict({
+            payer: admin.publicKey,
+            admin: user2.publicKey, // funded, but NOT in vault_state.signers
+            vaultState: vaultStatePda,
+            userAccount: houseAccountPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([user2])
+          .rpc();
+        expect.fail("should have rejected a non-vault-signer admin");
+      } catch (err: any) {
+        expect(err.toString()).to.match(/Unauthorized/i); // 6000
+      }
+    });
+
+    it("still enforces min-length on the admin create path", async () => {
+      try {
+        await program.methods
+          .adminCreateUserAccount(houseWallet.publicKey, makeUsername("ab"))
+          .accountsStrict({
+            payer: admin.publicKey,
+            admin: admin.publicKey,
+            vaultState: vaultStatePda,
+            userAccount: houseAccountPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+        expect.fail("should have rejected too-short username on the admin path");
+      } catch (err: any) {
+        expect(err.toString()).to.match(/UsernameTooShort/i); // 6022
+      }
+    });
+
+    it("still enforces printable ASCII on the admin create path", async () => {
+      const bytes = new Array(32).fill(0);
+      bytes[0] = 0x74; // t
+      bytes[1] = 0x01; // ← invalid (control char)
+      bytes[2] = 0x66; // f
+      try {
+        await program.methods
+          .adminCreateUserAccount(houseWallet.publicKey, bytes as any)
+          .accountsStrict({
+            payer: admin.publicKey,
+            admin: admin.publicKey,
+            vaultState: vaultStatePda,
+            userAccount: houseAccountPda,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+        expect.fail("should have rejected non-printable bytes on the admin path");
+      } catch (err: any) {
+        expect(err.toString()).to.match(/UsernameInvalidChars/i); // 6021
+      }
+    });
+
+    it("admin_create_user_account accepts a reserved username with a vault-signer co-sign", async () => {
+      await program.methods
+        .adminCreateUserAccount(houseWallet.publicKey, makeUsername("turf-monster"))
+        .accountsStrict({
+          payer: admin.publicKey,
+          admin: admin.publicKey, // vault signer 1-of-3 (also the payer here)
+          vaultState: vaultStatePda,
+          userAccount: houseAccountPda,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc();
+
+      const account = await program.account.userAccount.fetch(houseAccountPda);
+      expect(account.wallet.toBase58()).to.equal(houseWallet.publicKey.toBase58());
+      expect(account.seeds.toNumber()).to.equal(0);
+      expect(decodeUsername(account.username)).to.equal("turf-monster");
+    });
+
+    it("plain set_username still rejects a reserved rename (turf)", async () => {
+      try {
+        await program.methods
+          .setUsername(makeUsername("turf"))
+          .accountsStrict({
+            wallet: houseWallet.publicKey,
+            userAccount: houseAccountPda,
+          })
+          .signers([houseWallet])
+          .rpc();
+        expect.fail("should have rejected reserved prefix on the plain path");
+      } catch (err: any) {
+        expect(err.toString()).to.match(/UsernameReserved/i); // 6020
+      }
+    });
+
+    it("rejects admin_set_username when the co-signer is not a vault signer", async () => {
+      try {
+        await program.methods
+          .adminSetUsername(makeUsername("turf"))
+          .accountsStrict({
+            wallet: houseWallet.publicKey,
+            admin: user2.publicKey, // NOT in vault_state.signers
+            vaultState: vaultStatePda,
+            userAccount: houseAccountPda,
+          })
+          .signers([houseWallet, user2])
+          .rpc();
+        expect.fail("should have rejected a non-vault-signer admin");
+      } catch (err: any) {
+        expect(err.toString()).to.match(/Unauthorized/i); // 6000
+      }
+    });
+
+    it("admin_set_username accepts a reserved username with owner + vault-signer co-sign", async () => {
+      await program.methods
+        .adminSetUsername(makeUsername("turf"))
+        .accountsStrict({
+          wallet: houseWallet.publicKey,
+          admin: admin.publicKey, // vault signer 1-of-3
+          vaultState: vaultStatePda,
+          userAccount: houseAccountPda,
+        })
+        .signers([houseWallet])
+        .rpc();
+
+      const account = await program.account.userAccount.fetch(houseAccountPda);
+      expect(decodeUsername(account.username)).to.equal("turf");
+    });
+
+    it("still enforces min-length on the admin rename path", async () => {
+      try {
+        await program.methods
+          .adminSetUsername(makeUsername("ab"))
+          .accountsStrict({
+            wallet: houseWallet.publicKey,
+            admin: admin.publicKey,
+            vaultState: vaultStatePda,
+            userAccount: houseAccountPda,
+          })
+          .signers([houseWallet])
+          .rpc();
+        expect.fail("should have rejected too-short username on the admin path");
+      } catch (err: any) {
+        expect(err.toString()).to.match(/UsernameTooShort/i); // 6022
+      }
+    });
+
+    it("admin_set_username still requires the account owner's signature", async () => {
+      try {
+        await program.methods
+          .adminSetUsername(makeUsername("turf-x"))
+          .accountsStrict({
+            wallet: user1.publicKey, // wrong owner for houseAccountPda
+            admin: admin.publicKey,
+            vaultState: vaultStatePda,
+            userAccount: houseAccountPda,
+          })
+          .signers([user1])
+          .rpc();
+        expect.fail("should have rejected a non-owner wallet");
+      } catch (err: any) {
+        expect(err.toString()).to.match(/ConstraintSeeds|Unauthorized|seeds/i);
+      }
+    });
+  });
+
   describe("deposit", () => {
     it("deposits USDC for user1", async () => {
       const [userAccountPda] = PublicKey.findProgramAddressSync(

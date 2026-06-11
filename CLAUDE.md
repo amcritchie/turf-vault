@@ -8,8 +8,8 @@ Anchor smart contract for contest escrow on Solana. Backend for Turf Monster (Ra
 - **Framework**: Anchor 0.32.1
 - **Rust**: 1.89.0 (via `rust-toolchain.toml`)
 - **Network**: Localnet (dev), Devnet (staging)
-- **Version**: 0.24.0 (deployed devnet 2026-06-07, slot 467718980 - grant_seeds admin quest grants + Season.quest_seeds; v0.21 name/slug dropped; see CHANGELOG)
-- **Binary**: 531,792 bytes (.so) / ProgramData 532,184 bytes (~3.7 SOL devnet rent)
+- **Version**: 0.25.0 on this branch (admin username flows — NOT deployed; rides the next Squads upgrade window). `main` is caught up to **v0.24.0**, the version deployed on BOTH devnet (2026-06-07, slot 467718980) and mainnet (`DaFv83yo…`, 2026-06-08) — grant_seeds admin quest grants + Season.quest_seeds; v0.21 name/slug dropped; see CHANGELOG.
+- **Binary**: 531,792 bytes (.so) / ProgramData 532,184 bytes (~3.7 SOL devnet rent) — v0.24 build
 - **Upgrade authority**: Squads V4 2-of-3 multisig PDA `BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC` (OPSEC-002 — see "Deploying an upgrade" below). `anchor deploy` no longer works for upgrades; the first deploy of a fresh program ID still uses `solana program deploy` from Alex Bot, then `set-upgrade-authority` to the Squads vault.
 
 ### v0.16 architectural shift (vs v0.15.x)
@@ -24,7 +24,7 @@ Anchor smart contract for contest escrow on Solana. Backend for Turf Monster (Ra
 
 ```
 programs/turf_vault/src/
-├── lib.rs              # Program entry — 19 thin wrappers (v0.20 re-added update_signers)
+├── lib.rs              # Program entry — 21 thin wrappers (v0.25 added the admin username flows)
 ├── state.rs            # 6 account structs + 2 enums + multisig helpers
 ├── errors.rs           # 6000-6044 (6039-41 name/slug, 6042-44 grant_seeds; some retired-but-kept)
 └── instructions/
@@ -35,6 +35,8 @@ programs/turf_vault/src/
     ├── deactivate_currency.rs  # NEW (2-of-3) — flip a slot's active flag off
     ├── create_user_account.rs  # PDA per wallet: username + stats + seeds
     ├── set_username.rs         # Owner signs; v0.15.1 on-chain validation
+    ├── admin_create_user_account.rs # NEW v0.25 — create + 1-of-3 co-sign waives reserved-prefix only
+    ├── admin_set_username.rs   # NEW v0.25 — owner signs + 1-of-3 co-sign waives reserved-prefix only
     ├── create_season.rs        # Per-entry seed_schedule + v0.23 quest_seeds[16] (immutable)
     ├── grant_seeds.rs          # v0.22 (1-of-3) — standalone admin quest-bonus grant; flexible kinds 0-15 (v0.23)
     ├── create_contest.rs       # entry_fee_by_currency[16] + USDC prize_pool
@@ -94,6 +96,8 @@ pub fn validate_multisig(&self, s1: &Pubkey, s2: &Pubkey) -> bool {
 | `update_signers` | **2-of-3** | Rotate signer pubkeys in place (no redeploy). Threshold is PINNED at 2-of-3 — this rotates signers only (`validate_multisig` ignores the threshold field). `validate_multisig(admin, cosigner)`. Continuity-guarded: no duplicate signers (6014), no default/zeroed slots + BOTH authorizing cosigners survive the rotation (`SignerContinuityRequired` 6017). Re-added v0.20 (adapted to zero-copy VaultState). |
 | `create_user_account` | Permissionless payer | Anyone can pay rent for any wallet's UserAccount PDA. Username required (≥ 3 chars). |
 | `set_username` | User signs | Wallet owner signs; v0.15.1 on-chain validation (reserved prefixes, ASCII, ≥3 chars). |
+| `admin_create_user_account` | Permissionless payer + **1-of-3 co-sign** | v0.25. Same as `create_user_account` plus a required `admin: Signer` validated `vault_state.is_signer` (else `Unauthorized` 6000). Waives ONLY the reserved-prefix check — charset + ≥3 chars still enforced. Adds `vault_state` (read-only; the plain variant doesn't load it). For the operator house account ("turf"). |
+| `admin_set_username` | User + **1-of-3 co-sign** | v0.25. Same as `set_username` (owner signs, consenting) plus the required vault-signer `admin` co-signer; same prefix-only waiver. |
 | `create_season` | 1-of-3 | Any signer can create. Seed schedule immutable after create. |
 | `create_contest` | 1-of-3 + creator | Admin pays SOL rent; creator (Phantom or server-keypair) signs the USDC prize-pool transfer. |
 | `set_contest_lock_time` | 1-of-3 / **2-of-3 post-lock** | Sets `Contest.lock_timestamp`. Pre-lock: 1-of-3. Amending a lock that has ALREADY PASSED requires 2-of-3 (optional `cosigner`) — closes the #5 re-open vector. Rejected once concluded (`ContestConcluded` 6035) or on invalid timestamps (`InvalidTimestamp` 6037). |
@@ -210,7 +214,7 @@ All accounts use `#[derive(InitSpace)]`. Contest has `#[max_len(10)]` on `payout
 | 6017 | SignerContinuityRequired | `update_signers` new set drops EITHER authorizing cosigner (both must survive a 2-of-3 rotation), or contains a default/zeroed slot. UN-RETIRED in v0.20 (was reserved-but-unused v0.16–v0.19). |
 | 6018 | VaultPaused | Funds-touching op called while vault is paused (v0.15.0) |
 | 6019 | WithdrawDailyCapExceeded | RETIRED in v0.16 (no withdraw instruction); slot kept for numbering stability |
-| 6020 | UsernameReserved | Username uses a reserved prefix — admin, system, turf, vault, support, etc. (v0.15.1, audit C2) |
+| 6020 | UsernameReserved | Username uses a reserved prefix — admin, system, turf, vault, support, etc. (v0.15.1, audit C2). The v0.25 `admin_*` username variants waive ONLY this check via a 1-of-3 vault-signer co-sign. |
 | 6021 | UsernameInvalidChars | Username has bytes outside printable ASCII 0x20..0x7E (v0.15.1, audit C2) |
 | 6022 | UsernameTooShort | Username has fewer than 3 non-null bytes (v0.15.1, audit C2) |
 | 6023 | CurrencyAlreadyRegistered | `register_currency` called for a mint that's already in the registry |
@@ -237,7 +241,7 @@ All accounts use `#[derive(InitSpace)]`. Contest has `#[max_len(10)]` on `payout
 anchor test
 ```
 
-**The v0.15.1 test suite at `tests/turf_vault.ts` will NOT pass against v0.16** — it references `deposit`, `withdraw`, `enter_contest_direct`, etc. that no longer exist, and the account layouts changed. A v0.16 rewrite is pending. Until then, run `cargo check` and `anchor idl build` for static verification; functional coverage lives in turf-monster's Rails + Playwright suites (which DO target v0.16's surface).
+**The v0.15.1 test suite at `tests/turf_vault.ts` will NOT pass against v0.16+** — it references `deposit`, `withdraw`, `enter_contest_direct`, etc. that no longer exist, and the account layouts changed (verified still true 2026-06-10: `deposit`/`withdraw` blocks + `account.balance` reads remain). A rewrite for the current surface is pending. Until then, run `cargo check` and `anchor idl build` for static verification; functional coverage lives in turf-monster's Rails + Playwright suites (which DO target the current surface). New per-feature blocks (e.g. `admin username flows (v0.25)`) are written to the current surface and will run once the legacy blocks are rewritten or pruned.
 
 ### Test Setup Pattern
 ```typescript
@@ -271,6 +275,8 @@ anchor build
 anchor test
 ```
 
+> `anchor build` prints several `Error: Function ..crypto_common..hazmat..SerializableState.. Stack offset of N exceeded max offset of 4096` lines. These are dependency-level warnings from the sha2/crypto_common crates (pulled in with the direct `solana-program` dep for `hash()`, v0.19) on functions our program never calls on-chain; the build still completes ("Finished `release` profile") and v0.19+ binaries built this way run fine on devnet + mainnet. Not introduced by your change if you see them.
+
 ### Deploying an upgrade (OPSEC-002 — Squads multisig)
 
 **`anchor deploy` no longer works.** As of 2026-05-19 the program upgrade
@@ -296,12 +302,18 @@ solana program set-buffer-authority <BUFFER_ADDR> \
 #    doesn't grow it the way `solana program deploy` does), then wraps the
 #    `upgrade` in a Squad vault transaction → propose → approve (Alex Bot)
 #    → approve (Mason) → execute. Keys from 1Password.
-ALEX_BOT_KEY=$(op item get agent.solana       --vault agents --fields "private key" --reveal) \
+#    NOTE: the rotated Alex Bot key (8K81…) lives at `agent.alex.solana`
+#    (the old `agent.solana` item is gone with the leaked F6f8 key).
+#    squad-upgrade.js reads ONLY the TOP-LEVEL fields of scripts/squad.json,
+#    which on main is the MAINNET config — for a devnet upgrade, temporarily
+#    swap in the `_devnet_reference` values (network/programId/multisigPda/
+#    vaultPda) and revert after. Never commit the swap.
+ALEX_BOT_KEY=$(op item get agent.alex.solana  --vault agents --fields "private key" --reveal) \
 MASON_KEY=$(op item get agent.mason.solana    --vault agents --fields "private key" --reveal) \
   node scripts/squad-upgrade.js <BUFFER_ADDR>
 
 # 5. Verify
-solana program show Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT --url devnet
+solana program show EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ --url devnet
 #    → "Last Deployed In Slot" should be recent
 ```
 
@@ -313,7 +325,7 @@ squads-upgrade-authority-migration.md` in mcritchie-studio.
 
 ```bash
 # Verify current state
-solana program show Dx8uGU5w7B9NytDSsW4kseGZuqdVVRq1KY1mGXN2GaCT --url devnet
+solana program show EQGFJAcABtDb6VXtiijTjZ6cE2UqdvhnqJvoharJbpMJ --url devnet
 ```
 
 ### `anchor test` Workaround
@@ -360,7 +372,7 @@ bin/rails solana:init_vault INIT=true SIGNERS=addr1,addr2,addr3 THRESHOLD=2
 - **USDC Mint**: `222Dcu2RgAXE3T8A4mGSG3kQyXaNjqePx7vva1RdWBN9` (test, 6 decimals)
 - **USDT Mint**: `9mxkN8KaVA8FFgDE2LEsn2UbYLPG8Xg9bf4V9MYYi8Ne` (test, 6 decimals)
 
-**Status**: **v0.23.0 deployed on devnet 2026-06-06 (slot 467696203)** via the Squads upgrade (autonomous — `8K81` Alex Bot + Mason, 2-of-3). v0.23: `grant_seeds` accepts any `kind` `0..=15` (was fixed `{0,1,2}`) so new quests need only a Rails constant — never another redeploy (added `CHAT_MESSAGE = 3`); and `Season.quest_seeds: [u64; 16]` puts each quest's seed reward on-chain beside the entry `seed_schedule`, tuned by minting a new Season. **Season grew 101 → 229 bytes** — mint fresh, no migration (devnet Season 2 minted, quest_seeds `[25,25,25,25,…]`). **v0.22.0** (slot 467641352): standalone admin `grant_seeds` quest-bonus instruction (once-ever guard PDA `[b"seed_grant", wallet, kind, invitee]`; errors 6042-6044). The branch is rebased on **v0.21** (on-chain Contest name/slug, errors 6039-6041) so that code ships in the binary, though the app uses the Rails slug-decouple. **v0.20** re-added `update_signers`. **Key rotation 2026-06-06:** leaked Alex Bot `F6f8…` retired from VaultState signers + Squads members → `8K81…`; devnet members now `8K81 / 7ZDJ / CytJ`.
+**Status**: **v0.24.0 deployed on devnet 2026-06-07 (slot 467718980)** AND on **mainnet** (`DaFv83yokwTz8msP9CzJ13eazSGk15NuUTxjkfzJzxMM`, 2026-06-08; freshly-built mainnet IDL hashes to `5265cc497862ea39d5f3b99bf1fbf42d0cbd51678ca2237b0cc584ee117dde80` = `EXPECTED_IDL_HASH` on turf-monster-mainnet). v0.24 is the consolidated quest-seed release on top of v0.20 — it folds the interim v0.22/v0.23 dev iterations and **DROPS the v0.21 on-chain Contest name/slug** (only its parked error codes 6039-6041 remain; `create_contest` is unchanged from v0.20; the app uses the Rails slug-decouple). Devnet upgrade trail: pre-consolidation **v0.23.0** slot 467696203 (2026-06-06, autonomous Squads upgrade — `8K81` Alex Bot + Mason, 2-of-3) and **v0.22.0** slot 467641352. Feature summary — `grant_seeds` (1-of-3 admin quest-bonus grants; once-ever guard PDA `[b"seed_grant", wallet, kind, invitee]`; errors 6042-6044) accepts any `kind` `0..=15` so new quests need only a Rails constant — never another redeploy (`CHAT_MESSAGE = 3` added); `Season.quest_seeds: [u64; 16]` puts each quest's seed reward on-chain beside the entry `seed_schedule`, tuned by minting a new Season. **Season grew 101 → 229 bytes** — mint fresh, no migration (devnet Season 2 minted, quest_seeds `[25,25,25,25,…]`). **v0.20** re-added `update_signers`. **Key rotation 2026-06-06:** leaked Alex Bot `F6f8…` retired from VaultState signers + Squads members → `8K81…`; devnet members now `8K81 / 7ZDJ / CytJ` (re-verified on-chain against multisig `7nRuVw3VZFC6z85tYVDitPnaUHZCkqLpJRSTBNtPmtZB` 2026-06-11).
 
 Earlier: **v0.19.0 deployed on devnet 2026-06-02 (slot 466341566)** via the Squads upgrade (v0.18.0 was slot 465782911; v0.17.0 was 465778752). Verified by gold-standard compare 2026-06-02: the on-chain program binary (dumped, padding stripped) is byte-for-byte identical to a fresh `anchor build` of this source (HEAD `040ef3e`), and the freshly-built IDL hashes to `99d551001cd69468c8416292e150050c2d6307743c79a0c261211053004992c8` (== the `EXPECTED_IDL_HASH` pinned in turf-monster). **No account-layout / byte-size change from v0.18.** v0.19 is the audit-highs release: (#3) `settle_contest` binds each payout destination to the winner's canonical USDC ATA (`InvalidPayoutDestination` 6036); (#6) `settle_contest` requires the derived lock OR conclusion timestamp to have passed (reuses `ContestNotLocked` 6028); (#5) amending an ALREADY-PASSED `lock_timestamp` requires a distinct 2-of-3 cosigner (1-of-3 attempt → `Unauthorized` 6000), plus timestamp-validity guard (`InvalidTimestamp` 6037); (#9) `mint_entry_token` PDA seed is `source_ref_hash` asserted `== sha256(source_ref)` for true on-chain idempotency (`EntryTokenSeedMismatch` 6038). v0.17 added the derived on-chain time-lock — `Contest.lock_timestamp` (carved from `_reserved`, no size change) + `set_contest_lock_time` (1-of-3); `enter_contest{,_with_token}` reject once `Clock.unix_timestamp` passes it (`ContestLocked` 6034); retired `lock_contest`/`unlock_contest`. v0.18 added `Contest.conclusion_timestamp` (also carved from `_reserved`, no size change) + `set_contest_conclusion_time` (1-of-3); once passed, the lock time is final (`set_contest_lock_time` then rejects with `ContestConcluded` 6035). 2-of-3 multisig for treasury ops; upgrade authority is the Squads V4 vault. Vault initialized with 3 signers (Alex Bot, Alex, Mason), threshold 2.
 

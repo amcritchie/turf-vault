@@ -6,7 +6,8 @@
 //   Vault setup & governance — initialize, update_signers
 //   Currency registry        — register_currency, deactivate_currency
 //   Pause control            — pause, unpause
-//   User accounts            — create_user_account, set_username
+//   User accounts            — create_user_account, set_username,
+//                              admin_create_user_account, admin_set_username
 //   Seasons                  — create_season
 //   Contest lifecycle        — create_contest, set_contest_lock_time,
 //                              set_contest_conclusion_time, settle_contest,
@@ -20,6 +21,8 @@ pub mod register_currency;
 pub mod deactivate_currency;
 pub mod create_user_account;
 pub mod set_username;
+pub mod admin_create_user_account;
+pub mod admin_set_username;
 pub mod create_season;
 pub mod create_contest;
 pub mod set_contest_lock_time;
@@ -41,6 +44,8 @@ pub use register_currency::*;
 pub use deactivate_currency::*;
 pub use create_user_account::*;
 pub use set_username::*;
+pub use admin_create_user_account::*;
+pub use admin_set_username::*;
 pub use create_season::*;
 pub use create_contest::*;
 pub use set_contest_lock_time::*;
