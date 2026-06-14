@@ -1,8 +1,10 @@
 # Mainnet First Deploy — Runbook
 
-> One-shot procedure for the **first** deployment of `turf_vault` to Solana
-> mainnet-beta. Subsequent upgrades go through `scripts/squad-upgrade.js` and
-> are NOT covered here — see CLAUDE.md for the upgrade flow.
+> **HISTORICAL FIRST-DEPLOY RUNBOOK. DO NOT USE AS LIVE DEPLOYMENT IDENTITY.**
+> This was the one-shot procedure for the first deployment of `turf_vault` to
+> Solana mainnet-beta. Current devnet/mainnet program IDs, signer set, IDL hash,
+> and upgrade authority live in [`CURRENT_DEPLOYMENT.md`](CURRENT_DEPLOYMENT.md).
+> Subsequent upgrades go through `scripts/squad-upgrade.js`.
 
 **Scope:** broadcasts an immutable program ID + locks the upgrade authority
 to a Squads 2-of-3 multisig. Everything in §§3–8 is irreversible. Read the
@@ -313,8 +315,8 @@ If anything is wrong, the recovery flow is:
 
 ## §10. Cutover
 
-This is the moment you flip turf.mcritchie.studio (or wherever) to point
-at the mainnet app instead of the devnet one. Up to this point the
+This is the moment you flip `app.turfmonster.media` to point at the
+mainnet app instead of the devnet one. Up to this point the
 mainnet app has no traffic and the devnet app is unchanged.
 
 1. Update DNS / Heroku custom domain attachment.
