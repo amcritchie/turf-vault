@@ -1,0 +1,1107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>turf-vault mainnet deploy — bytes &amp; SOL (historical)</title>
+<style>
+  :root {
+    --bg: #0b1020;
+    --bg-2: #121933;
+    --bg-3: #1a2347;
+    --ink: #e6ecff;
+    --ink-dim: #97a3c8;
+    --ink-dimmer: #5d6790;
+    --rule: #243155;
+    --rule-hi: #344473;
+    --accent: #6ad7ff;
+    --accent-2: #c5a3ff;
+    --good: #7af0a9;
+    --warn: #ffce6b;
+    --bad: #ff7e7e;
+    --code-bg: #0a0e1d;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.5; }
+  body { padding: 32px max(16px, 4vw) 80px; }
+  h1, h2, h3, h4 { font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+  h1 { font-size: 28px; letter-spacing: -0.02em; }
+  h2 { font-size: 22px; }
+  h3 { font-size: 17px; color: var(--ink); }
+  .notice {
+    max-width: 1280px; margin: 0 auto 24px; padding: 12px 14px;
+    border: 1px solid rgba(255,206,107,0.35);
+    background: rgba(255,206,107,0.09);
+    color: var(--warn);
+    border-radius: 10px;
+  }
+  .mono { font-family: var(--mono); }
+  .dim { color: var(--ink-dim); }
+  .dimmer { color: var(--ink-dimmer); }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-family: var(--mono); }
+  .pill.live    { background: rgba(122,240,169,0.12); color: var(--good); border: 1px solid rgba(122,240,169,0.3); }
+  .pill.one     { background: rgba(106,215,255,0.12); color: var(--accent); border: 1px solid rgba(106,215,255,0.3); }
+  .pill.partial { background: rgba(255,206,107,0.12); color: var(--warn); border: 1px solid rgba(255,206,107,0.3); }
+  .pill.dead    { background: rgba(255,126,126,0.12); color: var(--bad); border: 1px solid rgba(255,126,126,0.3); }
+  .pill.auth1   { background: rgba(106,215,255,0.10); color: var(--accent); border: 1px solid var(--rule-hi); }
+  .pill.auth2   { background: rgba(197,163,255,0.12); color: var(--accent-2); border: 1px solid var(--rule-hi); }
+  .pill.user    { background: rgba(122,240,169,0.10); color: var(--good); border: 1px solid var(--rule-hi); }
+  .pill.init    { background: rgba(255,206,107,0.10); color: var(--warn); border: 1px solid var(--rule-hi); }
+  header {
+    max-width: 1280px; margin: 0 auto 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--rule);
+  }
+  header .sub { color: var(--ink-dim); margin-top: 6px; font-size: 14px; }
+  main { max-width: 1280px; margin: 0 auto; display: grid; gap: 24px; }
+
+  /* ── Hero numbers grid ───────────────────────────────────── */
+  .hero {
+    display: grid; gap: 12px;
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .stat {
+    background: var(--bg-2);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    padding: 16px 18px;
+  }
+  .stat .label { font-size: 12px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+  .stat .value { font-family: var(--mono); font-size: 26px; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .stat .value .unit { font-size: 14px; color: var(--ink-dim); margin-left: 4px; }
+  .stat .foot { color: var(--ink-dim); font-size: 12px; margin-top: 6px; }
+  .stat.permanent .value { color: var(--warn); }
+  .stat.refundable .value { color: var(--good); }
+  .stat.float .value { color: var(--accent); }
+  .stat.binary .value { color: var(--accent-2); }
+
+  /* ── Section card ────────────────────────────────────────── */
+  section.card {
+    background: var(--bg-2);
+    border: 1px solid var(--rule);
+    border-radius: 14px;
+    padding: 22px 24px;
+  }
+  section.card > h2 { margin-bottom: 4px; display: flex; align-items: baseline; gap: 12px; }
+  section.card > h2 .tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-dimmer);
+    letter-spacing: 0.08em;
+  }
+  section.card > .desc { color: var(--ink-dim); font-size: 14px; margin-bottom: 18px; }
+
+  /* ── Section-1 stacked bar (binary layout) ──────────────── */
+  .stackbar { display: flex; height: 38px; width: 100%; border-radius: 8px; overflow: hidden; border: 1px solid var(--rule-hi); }
+  .stackbar > div { position: relative; display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 12px; color: rgba(0,0,0,0.7); text-shadow: 0 0 2px rgba(255,255,255,0.4); }
+  .stackbar > div span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 4px; }
+  .stackbar-legend { margin-top: 12px; display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); font-size: 13px; }
+  .legend-row { display: flex; align-items: center; gap: 10px; }
+  .legend-row .sw { width: 14px; height: 14px; border-radius: 3px; flex: none; }
+  .legend-row .name { flex: 1; }
+  .legend-row .v { font-family: var(--mono); color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+
+  /* ── Section-2 .text breakdown ──────────────────────────── */
+  .text-breakdown {
+    display: grid; gap: 12px; grid-template-columns: 1fr;
+  }
+  .row-bar { display: grid; grid-template-columns: 200px 1fr 80px 70px; align-items: center; gap: 12px; font-size: 13px; }
+  .row-bar .lbl { color: var(--ink); }
+  .row-bar .bar-track { background: var(--bg-3); height: 10px; border-radius: 4px; overflow: hidden; }
+  .row-bar .bar-fill { height: 100%; border-radius: 4px; }
+  .row-bar .v { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; color: var(--ink-dim); }
+  .row-bar .pct { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; color: var(--ink-dimmer); font-size: 12px; }
+
+  /* ── Section-3 instruction table ────────────────────────── */
+  .ix-controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .ix-controls button {
+    background: var(--bg-3);
+    border: 1px solid var(--rule);
+    color: var(--ink-dim);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .ix-controls button:hover { background: var(--bg-3); color: var(--ink); border-color: var(--rule-hi); }
+  .ix-controls button.active { background: var(--accent); color: #0a0e1d; border-color: var(--accent); }
+  table.ix {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  table.ix th {
+    text-align: left;
+    padding: 10px 8px;
+    border-bottom: 1px solid var(--rule);
+    color: var(--ink-dim);
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    user-select: none;
+  }
+  table.ix th:hover { color: var(--ink); }
+  table.ix th.sort-asc::after  { content: " ▲"; color: var(--accent); }
+  table.ix th.sort-desc::after { content: " ▼"; color: var(--accent); }
+  table.ix td {
+    padding: 12px 8px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  table.ix tr.ix-row { cursor: pointer; }
+  table.ix tr.ix-row:hover { background: rgba(106,215,255,0.04); }
+  table.ix .ix-name { font-family: var(--mono); color: var(--ink); font-weight: 500; }
+  table.ix .ix-bytes { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  table.ix .ix-bar { display: inline-block; vertical-align: middle; height: 4px; border-radius: 2px; background: var(--accent); margin-left: 6px; }
+  table.ix tr.detail { background: var(--bg-3); }
+  table.ix tr.detail td { padding: 0; border: none; }
+  table.ix tr.detail .panel { padding: 18px 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  table.ix tr.detail .panel h4 { font-size: 12px; color: var(--ink-dim); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+  table.ix tr.detail .panel .path { font-family: var(--mono); font-size: 12px; color: var(--accent); word-break: break-all; }
+  table.ix tr.detail .panel .meta { color: var(--ink-dim); font-size: 13px; margin-top: 4px; }
+  table.ix tr.detail .panel .notes { margin-top: 10px; }
+  table.ix tr.detail .panel .notes li { color: var(--ink-dim); font-size: 13px; }
+  table.ix .icf-tag {
+    display: inline-block; font-family: var(--mono); font-size: 10px;
+    background: rgba(197,163,255,0.10); color: var(--accent-2);
+    padding: 1px 6px; border-radius: 999px; border: 1px solid rgba(197,163,255,0.3);
+    margin-left: 6px;
+  }
+
+  /* ── Section trim / cut analysis ─────────────────────────── */
+  .trim-list { display: grid; gap: 12px; }
+  .trim-row {
+    display: grid; grid-template-columns: 1fr auto auto;
+    align-items: center; gap: 16px;
+    padding: 12px 14px;
+    background: var(--bg-3);
+    border-radius: 8px;
+    border: 1px solid var(--rule);
+  }
+  .trim-row.dead   { border-left: 3px solid var(--bad); }
+  .trim-row.maybe  { border-left: 3px solid var(--warn); }
+  .trim-row.framework { border-left: 3px solid var(--accent-2); }
+  .trim-row .title { color: var(--ink); }
+  .trim-row .why   { color: var(--ink-dim); font-size: 13px; margin-top: 2px; }
+  .trim-row .bytes { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--warn); white-space: nowrap; }
+  .trim-row .sol   { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--good); white-space: nowrap; min-width: 90px; text-align: right; }
+
+  /* ── Cost calculator ─────────────────────────────────────── */
+  .calc {
+    display: grid; gap: 16px;
+    grid-template-columns: 1fr 1fr;
+  }
+  .calc-block { background: var(--bg-3); border-radius: 8px; padding: 16px 18px; border: 1px solid var(--rule); }
+  .calc-block h4 { font-size: 13px; color: var(--ink); margin-bottom: 12px; }
+  .calc-block .line { display: flex; justify-content: space-between; padding: 4px 0; font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; color: var(--ink-dim); }
+  .calc-block .line.total { border-top: 1px solid var(--rule-hi); margin-top: 8px; padding-top: 8px; color: var(--ink); font-weight: 600; }
+  .calc-block .line .v { color: var(--ink); }
+  .calc-block.permanent .line.total .v { color: var(--warn); font-size: 16px; }
+  .calc-block.float .line.total .v { color: var(--accent); font-size: 16px; }
+  .calc-controls { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .calc-controls label { font-size: 13px; color: var(--ink-dim); }
+  .calc-controls input[type="number"] {
+    background: var(--bg-3); border: 1px solid var(--rule);
+    color: var(--ink); padding: 6px 10px; border-radius: 6px;
+    font-family: var(--mono); width: 90px; font-size: 13px;
+  }
+  .calc-controls .live { font-family: var(--mono); font-size: 13px; color: var(--ink-dim); }
+  .calc-controls .live strong { color: var(--ink); }
+
+  /* ── Auth model diagram ──────────────────────────────────── */
+  .auth-grid { display: grid; gap: 12px; grid-template-columns: repeat(4, 1fr); }
+  .auth-card { background: var(--bg-3); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; }
+  .auth-card .h { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-dim); margin-bottom: 6px; }
+  .auth-card .who { font-family: var(--mono); font-size: 13px; color: var(--ink); margin-bottom: 8px; }
+  .auth-card ul { margin: 0; padding-left: 18px; font-size: 12px; color: var(--ink-dim); }
+  .auth-card.auth1 { border-top: 2px solid var(--accent); }
+  .auth-card.auth2 { border-top: 2px solid var(--accent-2); }
+  .auth-card.user  { border-top: 2px solid var(--good); }
+  .auth-card.init  { border-top: 2px solid var(--warn); }
+
+  /* ── Footer / source notes ───────────────────────────────── */
+  footer { margin-top: 32px; max-width: 1280px; padding: 16px 0; color: var(--ink-dimmer); font-size: 12px; border-top: 1px solid var(--rule); }
+  footer .src { font-family: var(--mono); }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    .hero { grid-template-columns: repeat(2, 1fr); }
+    .calc { grid-template-columns: 1fr; }
+    .auth-grid { grid-template-columns: repeat(2, 1fr); }
+    .row-bar { grid-template-columns: 130px 1fr 70px 50px; }
+    table.ix tr.detail .panel { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>turf-vault — Mainnet deployment cost map</h1>
+  <div class="sub">
+    Real <span class="mono">.text</span> attribution from <span class="mono">target/sbpf-solana-solana/release/turf_vault.so</span> v0.15.1 + per-instruction Web3/Web2 caller map. Section sizes from <span class="mono">llvm-objdump --section-headers</span>; per-function bytes from a debug-info rebuild (<span class="mono">CARGO_PROFILE_RELEASE_DEBUG=2 CARGO_PROFILE_RELEASE_STRIP=none</span>), deduplicated by address.
+  </div>
+</header>
+
+<div class="notice">
+  Historical generated artifact. Use this for deploy-cost intuition only; do not
+  treat instruction names, authority notes, or program-size numbers here as live
+  truth without rebuilding and checking <span class="mono">docs/CURRENT_DEPLOYMENT.md</span>.
+</div>
+
+<main>
+
+<!-- ─────────────────────────────────────── HERO ─────────── -->
+<section class="hero">
+  <div class="stat binary">
+    <div class="label">deploy binary</div>
+    <div class="value num">466,576<span class="unit">bytes</span></div>
+    <div class="foot">~456 KB. The ELF that lands on chain.</div>
+  </div>
+  <div class="stat permanent">
+    <div class="label">permanent rent</div>
+    <div class="value num">3.248<span class="unit">SOL</span></div>
+    <div class="foot">Forever-locked rent on the ProgramData account. Forfeited the moment you deploy.</div>
+  </div>
+  <div class="stat refundable">
+    <div class="label">refundable buffer</div>
+    <div class="value num">3.248<span class="unit">SOL</span></div>
+    <div class="foot">During-deploy buffer account rent. Returned to your wallet once you <span class="mono">close-buffer</span>.</div>
+  </div>
+  <div class="stat float">
+    <div class="label">total float at deploy</div>
+    <div class="value num">~6.50<span class="unit">SOL</span></div>
+    <div class="foot">Both accounts exist simultaneously during deploy. Need this in <span class="mono">Alex Bot</span> before <span class="mono">write-buffer</span>.</div>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────── SECTION 1 ─────── -->
+<section class="card">
+  <h2>Where the 466 KB goes <span class="tag">ELF SECTION HEADERS</span></h2>
+  <div class="desc">Solana charges rent on every byte in the ProgramData account, regardless of section. ELF section layout decides what those bytes <em>are</em>.</div>
+  <div class="stackbar" id="stackbar"></div>
+  <div class="stackbar-legend" id="stackbar-legend"></div>
+</section>
+
+<!-- ─────────────────────────────────────── SECTION 2 ─────── -->
+<section class="card">
+  <h2>What's inside .text <span class="tag">CODE: 396,336 BYTES (85% OF BINARY)</span></h2>
+  <div class="desc">.text deduplicated by address — ICF (identical-code-folding) merges identical closures generated for the four entry variants into one block. Numbers add to .text within 0.4%.</div>
+  <div class="text-breakdown" id="text-breakdown"></div>
+</section>
+
+<!-- ─────────────────────────────────────── SECTION 3 ─────── -->
+<section class="card">
+  <h2>Per-instruction byte cost <span class="tag">16 HANDLERS</span></h2>
+  <div class="desc">Click any row to see Web3 (Phantom / browser) and Web2 (Rails / Alex Bot) callers. Sort by clicking column headers. Filter buttons above the table.</div>
+
+  <div class="ix-controls">
+    <button class="filter-btn active" data-filter="all">All 16</button>
+    <button class="filter-btn" data-filter="live">Live</button>
+    <button class="filter-btn" data-filter="one">One-time</button>
+    <button class="filter-btn" data-filter="partial">Partial</button>
+    <button class="filter-btn" data-filter="dead">Unused</button>
+    <button class="filter-btn" data-filter="web3-yes">Web3 callers</button>
+    <button class="filter-btn" data-filter="web2-yes">Web2 callers</button>
+  </div>
+
+  <table class="ix" id="ix-table">
+    <thead>
+      <tr>
+        <th data-sort="name">Instruction</th>
+        <th data-sort="bytes" class="sort-desc">Bytes (.text)</th>
+        <th data-sort="auth">Auth</th>
+        <th data-sort="web3">Web3 caller</th>
+        <th data-sort="web2">Web2 caller</th>
+        <th data-sort="status">Status</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<!-- ─────────────────────────────────────── SECTION 4 ─────── -->
+<section class="card">
+  <h2>What you could cut <span class="tag">SHRINK BEFORE MAINNET</span></h2>
+  <div class="desc">If 3.25 SOL of permanent rent is more than you want to pay, here's what's removable and what it saves. Each KB cut is roughly 0.0068 SOL refunded forever — small numbers, but they're the only knobs available without redesigning.</div>
+  <div class="trim-list" id="trim-list"></div>
+</section>
+
+<!-- ─────────────────────────────────────── SECTION 5 ─────── -->
+<section class="card">
+  <h2>Auth model — who can call what <span class="tag">SIGNER MATRIX</span></h2>
+  <div class="desc">Four signer roles. Determines whether the Rails backend can run an instruction unaided or needs a browser-side Phantom round-trip.</div>
+  <div class="auth-grid">
+    <div class="auth-card init">
+      <div class="h">INIT_AUTHORITY</div>
+      <div class="who">Alex's Phantom key (constant in binary)</div>
+      <ul>
+        <li>initialize (once, ever)</li>
+      </ul>
+    </div>
+    <div class="auth-card auth1">
+      <div class="h">1-of-3 vault signer</div>
+      <div class="who">Alex Bot · Alex · Mason</div>
+      <ul>
+        <li>create_contest · create_season · close_contest</li>
+        <li>enter_contest · enter_contest_direct (admin pays rent)</li>
+        <li>mint_entry_token · create_user_account</li>
+      </ul>
+    </div>
+    <div class="auth-card auth2">
+      <div class="h">2-of-3 vault signers</div>
+      <div class="who">2 of {Alex Bot · Alex · Mason}</div>
+      <ul>
+        <li>settle_contest · pause · unpause</li>
+        <li>Always a Phantom co-sign round-trip</li>
+      </ul>
+    </div>
+    <div class="auth-card user">
+      <div class="h">User wallet signs</div>
+      <div class="who">Phantom OR managed keypair</div>
+      <ul>
+        <li>deposit · withdraw · set_username</li>
+        <li>enter_contest_direct (USDC transfer from user ATA)</li>
+        <li>enter_contest_with_token (token-owner consent)</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────────────────────────────────── SECTION 6 ─────── -->
+<section class="card">
+  <h2>Deploy-cost calculator <span class="tag">SOL → USD</span></h2>
+  <div class="desc">Solana rent formula: <span class="mono">(data_len + 128) × 6960 lamports</span> = rent-exempt minimum (2 years × lamports-per-byte-year × 2× exemption threshold).</div>
+
+  <div class="calc-controls">
+    <label>SOL price: $<input type="number" id="sol-price" value="165" min="1" max="10000" step="1"></label>
+    <span class="live">Binary size: <strong class="num" id="binary-size">466,576</strong> bytes</span>
+    <span class="live">SOL needed: <strong class="num" id="sol-total">6.50</strong></span>
+    <span class="live">≈ <strong class="num" id="usd-total">$1,073</strong></span>
+  </div>
+
+  <div class="calc">
+    <div class="calc-block permanent">
+      <h4>PERMANENT (you spend forever)</h4>
+      <div class="line"><span>ProgramData rent (466,576 + 128) × 6960</span><span class="v num" id="pd-lamports">3,247,861,440 ℓ</span></div>
+      <div class="line"><span>Program account (36 + 128) × 6960</span><span class="v num">1,141,440 ℓ</span></div>
+      <div class="line"><span>Deploy TX fees (signatures + compute)</span><span class="v num">~1,000,000 ℓ</span></div>
+      <div class="line total"><span>Permanent SOL spent</span><span class="v num" id="perm-sol">~3.250 SOL</span></div>
+      <div class="line"><span class="dim">≈ at current price</span><span class="v num" id="perm-usd">~$536</span></div>
+    </div>
+
+    <div class="calc-block float">
+      <h4>FLOAT (you need on hand, then refundable)</h4>
+      <div class="line"><span>Buffer account (same size as binary)</span><span class="v num">3,247,861,440 ℓ</span></div>
+      <div class="line"><span class="dim">— refunded when you close the buffer post-deploy</span><span></span></div>
+      <div class="line total"><span>Additional float during deploy</span><span class="v num" id="float-sol">~3.250 SOL</span></div>
+      <div class="line"><span class="dim">≈ at current price</span><span class="v num" id="float-usd">~$536</span></div>
+      <div class="line" style="margin-top:8px"><span class="dim">Recommended wallet balance before <span class="mono">write-buffer</span>:</span><span class="v num" id="walletmin-sol" style="color: var(--accent)">~6.50 SOL</span></div>
+    </div>
+  </div>
+
+  <div class="desc" style="margin-top: 18px; margin-bottom: 0;">
+    Subsequent upgrades through the Squad multisig need only the <em>float</em> portion — a new buffer is written, the program is upgraded in place, then the old buffer is closed. Net: ~0 SOL per upgrade, modulo TX fees and the brief float for the new buffer.
+  </div>
+</section>
+
+<footer>
+  <div>Data sources:</div>
+  <div class="src">
+    sections: <code>llvm-objdump --section-headers target/deploy/turf_vault.so</code> · symbols: rebuild with <code>CARGO_PROFILE_RELEASE_DEBUG=2 CARGO_PROFILE_RELEASE_STRIP=none cargo build-sbf</code>, then <code>llvm-objdump --syms | rustfilt</code>, dedup by address, bucket by demangled module path · callers: live source under <code>/Users/alex/projects/turf-monster</code> (app/, lib/) and inline ERB scripts · rent formula: <code>rent-exempt = (data_len + 128) × 3480 lamports/byte/year × 2.0 threshold</code>
+  </div>
+</footer>
+
+</main>
+
+<script>
+'use strict';
+
+// ─── DATA ─────────────────────────────────────────────────────
+
+const BINARY_SIZE = 466576;
+const TEXT_SIZE = 396336;
+
+const SECTIONS = [
+  { name: '.text',         bytes: 396336, color: '#6ad7ff', desc: 'BPF bytecode — every Anchor handler, every Rust core/alloc/serde routine pulled in by it.' },
+  { name: '.rel.dyn',      bytes:  36336, color: '#c5a3ff', desc: 'Relocation entries the BPF loader applies at load time to fix up addresses in .text and .rodata.' },
+  { name: '.rodata',       bytes:  20128, color: '#ffce6b', desc: 'Read-only strings: error names, msg!() log strings, account-field names embedded by Anchor #[derive(Accounts)].' },
+  { name: '.data.rel.ro',  bytes:  12080, color: '#7af0a9', desc: 'Relocatable read-only constants — Anchor discriminators, instruction-method tables, vtable-style indirections.' },
+  { name: '.rel.dyn meta', bytes:    838, color: '#5d6790', desc: '.dynamic + .dynsym + .dynstr — minimal dynamic-linking metadata the loader needs.' },
+  { name: 'ELF hdr+pad',   bytes: BINARY_SIZE - 396336 - 36336 - 20128 - 12080 - 838, color: '#243155', desc: 'ELF header, program headers, .shstrtab, section padding.' },
+];
+
+const TEXT_BUCKETS = [
+  { name: 'Handler logic (16 instructions)',         bytes: 163384, color: '#6ad7ff', detail: '41.1% of .text — each handler\'s handle_X function PLUS the Anchor-generated try_accounts validator for its Accounts struct. The validators dwarf the business logic (try_accounts for Initialize alone is ~8.5 KB).' },
+  { name: 'Anchor framework runtime',                bytes:  43792, color: '#c5a3ff', detail: 'anchor_lang account-info helpers, ErrorCode formatters, AccountSerialize/Deserialize machinery, Bumps-struct support.' },
+  { name: 'Rust core + alloc',                       bytes:  53992, color: '#bfc8e6', detail: 'core::* and alloc::* monomorphizations: slice indexing, format machinery, Vec growth, RangeFrom helpers. Pulled in by msg!() and Vec usage.' },
+  { name: 'Anchor IDL embed',                        bytes:  26592, color: '#ffce6b', detail: 'The IDL JSON + Idl* instruction handlers (IdlCreateAccount, IdlResize, IdlClose, IdlWrite, IdlSetAuthority, IdlSetBuffer). Pure metadata — usable only via "anchor idl fetch". Removable with the no-idl feature.' },
+  { name: 'Solana + SPL syscalls',                   bytes:  44072, color: '#7af0a9', detail: 'solana_program::* invoke helpers, system-program instruction builders, Pack/Unpack codecs, spl_token + spl_token_2022 + spl_associated_token instruction builders. Even though only classic SPL Token is used, Anchor 0.32.1 unconditionally pulls in token_2022.' },
+  { name: 'Turf state & errors',                     bytes:  20528, color: '#ff7e7e', detail: 'turf_vault::state — VaultState/UserAccount/Contest/ContestEntry/EntryTokenAccount/Season serializers + InitSpace derivations. turf_vault::errors — the 23 VaultError variants and their Display impls.' },
+  { name: 'Anchor program dispatch',                 bytes:  14168, color: '#a5b1d6', detail: 'turf_vault::__private::* — the 8-byte-discriminator switch generated by #[program] that routes each TX to a handler.' },
+  { name: 'serde / borsh / bincode / panic / misc',  bytes:  31248, color: '#5d6790', detail: 'borsh deserializers for each instruction\'s args struct, bincode used by spl_token instruction packing, panic_fmt/begin_panic for require!() failures, compiler_builtins for soft-float multiplication.' },
+];
+
+// 16 instructions (production, after force_close_vault + update_signers were dropped for v0.16.0)
+const INSTRUCTIONS = [
+  {
+    name: 'initialize',
+    bytes: 29520,
+    status: 'one',
+    statusLabel: 'one-time',
+    auth: 'INIT_AUTHORITY',
+    authClass: 'init',
+    web3Short: '/admin/vault_init',
+    web2Short: 'admin/vault_init_controller',
+    web3: {
+      file: 'app/views/admin/vault_init/show.html.erb',
+      loc: '120-198',
+      fn: 'window.initVault',
+      trigger: 'Admin clicks "Initialize Vault" on /admin/vault_init',
+      signer: 'Phantom (admin) — Alex\'s Phantom key signs as INIT_AUTHORITY',
+    },
+    web2: {
+      file: 'app/controllers/admin/vault_init_controller.rb#build (L36)',
+      vault: 'app/services/solana/vault.rb#build_initialize_vault (L217)',
+      altRake: 'lib/tasks/solana.rake#init_vault (L68) — bootstrap rake',
+      trigger: 'POST /admin/vault_init/build → server builds partially-signed TX → Phantom co-signs',
+      signer: 'Alex Bot pays SOL fee; INIT_AUTHORITY (Phantom) signs to create VaultState PDA',
+    },
+    notes: [
+      '9 accounts validated (3 signers, 2 mints, 2 vault token accounts, vault_state, payer).',
+      'Initialize::try_accounts alone is ~8.5 KB — the single largest validator in the program.',
+      'mainnet build pins INIT_AUTHORITY + EXPECTED_USDC_MINT + EXPECTED_USDT_MINT as compile-time constants.',
+    ],
+  },
+  {
+    name: 'enter_contest_direct',
+    bytes: 17784,
+    status: 'live',
+    statusLabel: 'live',
+    auth: '1-of-3 + user',
+    authClass: 'auth1',
+    web3Short: '/contests/:slug board',
+    web2Short: 'contests_controller#prepare_entry',
+    web3: {
+      file: 'app/views/contests/_turf_totals_board.html.erb (L1066-1112) · app/views/contests/_world_cup_survivor_board.html.erb (L157-192)',
+      fn: 'hold-to-confirm entry',
+      trigger: 'Phantom-session user completes hold-to-confirm on /contests/:slug',
+      signer: 'Phantom (entrant) — user signs USDC transfer from their ATA',
+    },
+    web2: {
+      file: 'app/controllers/contests_controller.rb#prepare_entry (L488)',
+      vault: 'app/services/solana/vault.rb#build_enter_contest_direct (L775)',
+      trigger: 'prepare_entry → stamp_entry_signature → confirm_onchain_entry round-trip',
+      signer: 'Alex Bot pays SOL rent; Phantom user signs USDC transfer',
+    },
+    notes: [
+      'Primary Web3 entry path. EnterContestDirect::try_accounts is the second-largest validator in the program (~12 KB) — validates 9 accounts.',
+      'Closure-folded with 3 sibling entry variants — the four entry handlers share several KB via ICF.',
+    ],
+    icf: ['enter_contest', 'enter_contest_with_token', 'enter_contest_direct_with_token'],
+  },
+  {
+    name: 'enter_contest_direct_with_token',
+    bytes: 15944,
+    status: 'dead',
+    statusLabel: 'unused',
+    auth: 'user signs',
+    authClass: 'user',
+    web3Short: '—',
+    web2Short: '—',
+    web3: { file: 'NOT CALLED from JS', fn: '—', trigger: '—', signer: '—' },
+    web2: { file: 'NOT CALLED from Rails', vault: '—', trigger: '—', signer: '—' },
+    notes: [
+      'Exists in the program (lib.rs:175) but has ZERO callers anywhere in turf-monster.',
+      'Reserved for "Phantom user redeems a free-entry token" — that path currently routes through enter_contest_with_token (managed-wallet) instead.',
+      'Removable for ~15.9 KB / ~0.108 SOL refund, but blocks any future Phantom-and-tokens use case.',
+    ],
+    icf: ['enter_contest_with_token'],
+  },
+  {
+    name: 'enter_contest_with_token',
+    bytes: 15352,
+    status: 'live',
+    statusLabel: 'live',
+    auth: '1-of-3 + wallet',
+    authClass: 'auth1',
+    web3Short: '—',
+    web2Short: 'contests_controller#enter',
+    web3: { file: 'NOT CALLED from JS — server signs both sides', fn: '—', trigger: '—', signer: '—' },
+    web2: {
+      file: 'app/controllers/contests_controller.rb#enter (L378)',
+      vault: 'app/services/solana/vault.rb#enter_contest_with_token (L732)',
+      trigger: 'Managed-wallet user with an unconsumed EntryTokenAccount enters a paid contest',
+      signer: 'Alex Bot signs as fee payer; managed wallet keypair co-signs as token owner (OPSEC-004)',
+    },
+    notes: [
+      'Token-owner co-sign requirement (OPSEC-004) — admin alone can\'t burn a user\'s token.',
+      'Atomic: entry + token consume + seeds award in one TX.',
+      'EnterContestWithToken::try_accounts is ~10.6 KB — validates 9 accounts.',
+    ],
+  },
+  {
+    name: 'enter_contest',
+    bytes: 15128,
+    status: 'live',
+    statusLabel: 'live',
+    auth: '1-of-3 vault',
+    authClass: 'auth1',
+    web3Short: '—',
+    web2Short: 'contests_controller#enter',
+    web3: { file: 'NOT CALLED from JS — server-only', fn: '—', trigger: '—', signer: '—' },
+    web2: {
+      file: 'app/controllers/contests_controller.rb#enter (L396) · app/models/entry.rb#enter_onchain! (L180)',
+      vault: 'app/services/solana/vault.rb#enter_contest (L687)',
+      trigger: 'Managed-wallet user enters an on-chain contest from the hold-to-confirm flow on /contests/:slug',
+      signer: 'Alex Bot signs alone — deducts USDC from user\'s vault balance',
+    },
+    notes: [
+      'The managed-wallet USDC-direct path (no token, no Phantom).',
+      'EnterContest::try_accounts is ~9.9 KB — validates 8 accounts.',
+    ],
+  },
+  {
+    name: 'create_contest',
+    bytes: 12864,
+    status: 'live',
+    statusLabel: 'live',
+    auth: '1-of-3 + creator',
+    authClass: 'auth1',
+    web3Short: '/contests/new · /contests/generator',
+    web2Short: 'contests_controller#create / generate_bundle',
+    web3: {
+      file: 'app/views/contests/new.html.erb (L277-329) · app/views/contests/generator.html.erb (L93-147)',
+      fn: 'inline scripts',
+      trigger: 'User submits new-contest form, or admin clicks "Provision Setup" on /contests/generator',
+      signer: 'Phantom (creator) — signs the prize-pool USDC transfer from their ATA',
+    },
+    web2: {
+      file: 'app/controllers/contests_controller.rb#create (L135) · #generate_bundle (L63) · #prepare_onchain_contest (L202)',
+      vault: 'app/services/solana/vault.rb#build_create_contest (L576) · #create_contest_server_funded (L627)',
+      trigger: 'POST /contests (multipart, returns serialized_tx) → sign → broadcast → POST /contests/finalize',
+      signer: 'Admin (Alex Bot) pays SOL rent; creator\'s Phantom co-signs prize-pool USDC transfer',
+    },
+    notes: [
+      'Dual-signer instruction — payer (rent) AND creator (USDC prize-pool transfer) must both sign.',
+      'Server-funded fallback (admin doubles as creator) exists for scripts and Rails console.',
+    ],
+  },
+  {
+    name: 'settle_contest',
+    bytes: 10048,
+    status: 'live',
+    statusLabel: 'live',
+    auth: '2-of-3 multisig',
+    authClass: 'auth2',
+    web3Short: '/admin/pending_transactions',
+    web2Short: 'admin/pending_transactions_controller',
+    web3: {
+      file: 'app/javascript/cosign.js (L4-53) · app/views/admin/pending_transactions/index.html.erb (L65)',
+      fn: 'window.cosignTransaction',
+      trigger: 'Admin clicks "Co-sign" on a pending TX row on /admin/pending_transactions',
+      signer: 'Phantom (cosigner) — Alex or Mason signs as second multisig signer',
+    },
+    web2: {
+      file: 'app/models/contest.rb#settle_onchain! (L395) · app/controllers/admin/pending_transactions_controller.rb#rebuild (L75)',
+      vault: 'app/services/solana/vault.rb#build_settle_contest (L865)',
+      trigger: 'Contest#grade! builds PendingTransaction with tx_type "settle_contest"; second signer cosigns via Phantom',
+      signer: 'Alex Bot signs as first; Phantom signs as second',
+    },
+    notes: [
+      'Uses remaining_accounts pattern — pairs of [user_account, contest_entry] passed as variable-length array, manually deserialized + re-serialized.',
+      'The handle_settle_contest function itself (excluding validation) is ~5.2 KB — largest pure-logic handler.',
+    ],
+  },
+  {
+    name: 'withdraw',
+    bytes: 9632,
+    status: 'live',
+    statusLabel: 'live',
+    auth: 'user signs',
+    authClass: 'user',
+    web3Short: '—',
+    web2Short: 'transaction_logs_controller#approve',
+    web3: { file: 'NOT CALLED from JS — admin off-ramp action only', fn: '—', trigger: '—', signer: '—' },
+    web2: {
+      file: 'app/controllers/transaction_logs_controller.rb#approve (L50)',
+      vault: 'app/services/solana/vault.rb#withdraw (L509)',
+      trigger: 'Admin clicks Approve on a pending withdrawal at /admin/transactions',
+      signer: 'Alex Bot pays SOL fee; managed wallet keypair signs as withdrawer',
+    },
+    notes: [
+      '$100 / rolling 24h per-user cap (DAILY_WITHDRAW_CAP, v0.15.0).',
+      'Blocked while vault is paused.',
+      'Shares ~7.5 KB of body code with deposit via ICF (the SPL transfer pipeline).',
+    ],
+    icf: ['deposit'],
+  },
+  {
+    name: 'mint_entry_token',
+    bytes: 9160,
+    status: 'live',
+    statusLabel: 'live',
+    auth: '1-of-3 vault',
+    authClass: 'auth1',
+    web3Short: '—',
+    web2Short: 'token_purchase_job · admin/free_entries',
+    web3: { file: 'NOT CALLED from JS — Stripe webhook + admin button only', fn: '—', trigger: '—', signer: '—' },
+    web2: {
+      file: 'app/jobs/token_purchase_job.rb (L68, loops per quantity) · app/controllers/admin/free_entries_controller.rb#mint_n_tokens (L126) · app/controllers/tokens_controller.rb#dev_mint (L128)',
+      vault: 'app/services/solana/vault.rb#mint_entry_token (L1020)',
+      trigger: 'Stripe webhook → TokenPurchaseJob (per-quantity loop); admin "Mint N" button on /admin/free_entries',
+      signer: 'Alex Bot signs alone',
+    },
+    notes: [
+      'Idempotent via source_ref ("stripe:&lt;session_id&gt;:&lt;i&gt;") — Sidekiq retry resumes mid-loop.',
+      'source enum: OPERATOR=0, STRIPE=1, MOONPAY=2.',
+    ],
+  },
+  {
+    name: 'create_season',
+    bytes: 8424,
+    status: 'live',
+    statusLabel: 'live',
+    auth: '1-of-3 vault',
+    authClass: 'auth1',
+    web3Short: '—',
+    web2Short: 'admin/seasons_controller · db/seeds.rb',
+    web3: { file: 'NOT CALLED from JS — admin form POST only', fn: '—', trigger: '—', signer: '—' },
+    web2: {
+      file: 'app/controllers/admin/seasons_controller.rb#create (L31) · db/seeds.rb (L665)',
+      vault: 'app/services/solana/vault.rb#create_season (L1105)',
+      trigger: 'Admin posts /admin/seasons form; seeds.rb auto-creates Season 1',
+      signer: 'Alex Bot signs alone',
+    },
+    notes: [
+      'Per-entry seed-award schedule baked in at season creation, immutable thereafter.',
+      'Pins the seed economy — caller can\'t substitute a richer-reward season at entry time (OPSEC-023).',
+    ],
+  },
+  {
+    name: 'create_user_account',
+    bytes: 6656,
+    status: 'live',
+    statusLabel: 'live',
+    auth: 'permissionless',
+    authClass: 'auth1',
+    web3Short: '—',
+    web2Short: 'CreateOnchainUserAccountJob + lazy from entry/deposit',
+    web3: { file: 'NOT CALLED from JS — server-driven only', fn: '—', trigger: '—', signer: '—' },
+    web2: {
+      file: 'app/jobs/create_onchain_user_account_job.rb (L14) · app/controllers/contests_controller.rb (L375, L395, L486) · app/jobs/stripe_deposit_job.rb (L19) · app/jobs/moonpay_deposit_job.rb (L16) · app/models/entry.rb (L178)',
+      vault: 'app/services/solana/vault.rb#ensure_user_account (L411) → #create_user_account (L425)',
+      trigger: 'Eager: User after_commit at signup. Lazy: any deposit/entry/prepare that finds the PDA missing',
+      signer: 'Admin (Alex Bot) signs alone and pays SOL rent — wallet account is Unchecked, NOT a Signer',
+    },
+    notes: [
+      'Idempotent — no-ops if PDA exists.',
+      'Username written at creation time (v0.14.0+).',
+    ],
+  },
+  {
+    name: 'set_username',
+    bytes: 3992,
+    status: 'live',
+    statusLabel: 'live',
+    auth: 'user signs',
+    authClass: 'user',
+    web3Short: '/account rename modal',
+    web2Short: 'accounts_controller#save_profile',
+    web3: {
+      file: 'app/javascript/username_rename_form.js (L74-85)',
+      fn: '_signAndBroadcast',
+      trigger: 'User edits username on /account and submits rename modal',
+      signer: 'Phantom (web3 users) — server returns serialized_tx, Phantom signs, posts back to /account/username/confirm',
+    },
+    web2: {
+      file: 'app/controllers/accounts_controller.rb#save_profile (L235 Phantom · L244 custodial)',
+      vault: 'app/services/solana/vault.rb#set_username (L452) · #build_set_username (L477)',
+      trigger: 'Custodial: server holds managed keypair and co-signs in one round-trip. Phantom: server partial, user finishes.',
+      signer: 'Admin pays SOL fee; wallet owner co-signs via Phantom OR managed keypair',
+    },
+    notes: [
+      'On-chain validation (v0.15.1): reserved prefixes (admin/system/turf/monster/support/mod/staff), printable-ASCII only, ≥3 chars.',
+      'Wallet MUST sign — admin alone cannot rename someone.',
+    ],
+  },
+  {
+    name: 'close_contest',
+    bytes: 3424,
+    status: 'dead',
+    statusLabel: 'unused',
+    auth: '1-of-3 vault',
+    authClass: 'auth1',
+    web3Short: '—',
+    web2Short: '—',
+    web3: { file: 'NOT CALLED from JS', fn: '—', trigger: '—', signer: '—' },
+    web2: { file: 'NOT CALLED from Rails', vault: '—', trigger: '—', signer: '—' },
+    notes: [
+      'Defined at lib.rs:144 but zero callers in turf-monster.',
+      'Would reclaim SOL rent from a settled Contest PDA back to the admin.',
+      'Removable for ~3.4 KB / ~0.024 SOL refund, but the rent on a settled Contest stays locked without it.',
+    ],
+  },
+  {
+    name: 'unpause',
+    bytes: 3152,
+    status: 'live',
+    statusLabel: 'live',
+    auth: '2-of-3 multisig',
+    authClass: 'auth2',
+    web3Short: '/admin/vault_state',
+    web2Short: 'admin/vault_state_controller#unpause',
+    web3: {
+      file: 'app/views/admin/vault_state/show.html.erb (L168-244)',
+      fn: 'window.vaultAction(\'unpause\')',
+      trigger: 'Admin submits unpause form on /admin/vault_state',
+      signer: 'Phantom (cosigner) — admin signs as first, Phantom signs as second',
+    },
+    web2: {
+      file: 'app/controllers/admin/vault_state_controller.rb#unpause (L50)',
+      vault: 'app/services/solana/vault.rb#build_unpause_vault (L335)',
+      trigger: 'POST /admin/vault_state/unpause → server partial-signs, Phantom cosigner finishes',
+      signer: 'Admin (Alex Bot) signs as first; Phantom cosigner signs as second',
+    },
+    notes: [
+      'Bucket gets the lion\'s share of the pause/unpause ICF block — handle_pause and handle_unpause share ~2.7 KB.',
+      'Lifts the emergency stop (clears VaultState.paused).',
+    ],
+    icf: ['pause'],
+  },
+  {
+    name: 'pause',
+    bytes: 1176,
+    status: 'live',
+    statusLabel: 'live',
+    auth: '2-of-3 multisig',
+    authClass: 'auth2',
+    web3Short: '/admin/vault_state',
+    web2Short: 'admin/vault_state_controller#pause',
+    web3: {
+      file: 'app/views/admin/vault_state/show.html.erb (L168-244)',
+      fn: 'window.vaultAction(\'pause\')',
+      trigger: 'Admin submits pause form on /admin/vault_state with reason',
+      signer: 'Phantom (cosigner)',
+    },
+    web2: {
+      file: 'app/controllers/admin/vault_state_controller.rb#pause (L29)',
+      vault: 'app/services/solana/vault.rb#build_pause_vault (L312)',
+      trigger: 'POST /admin/vault_state/pause with reason → server partial-signs, Phantom cosigner finishes',
+      signer: 'Admin (Alex Bot) signs as first; Phantom cosigner signs as second',
+    },
+    notes: [
+      'reason is logged on-chain (UTF-8 zero-padded to 64 bytes).',
+      'Bytes are smaller because ICF assigned the shared multisig-validation block to unpause — these are the pause-unique bytes only.',
+      'Blocks deposit / withdraw / enter_contest* while set.',
+    ],
+    icf: ['unpause'],
+  },
+  {
+    name: 'deposit',
+    bytes: 1128,
+    status: 'live',
+    statusLabel: 'live',
+    auth: 'user signs',
+    authClass: 'user',
+    web3Short: '—',
+    web2Short: 'StripeDepositJob · MoonpayDepositJob',
+    web3: { file: 'NOT CALLED from JS — Phantom users hold USDC in their ATA, never deposit', fn: '—', trigger: '—', signer: '—' },
+    web2: {
+      file: 'app/jobs/stripe_deposit_job.rb (L26) · app/jobs/moonpay_deposit_job.rb (L18)',
+      vault: 'app/services/solana/vault.rb#deposit (L541)',
+      trigger: 'Stripe / MoonPay webhook fires → Sidekiq job mints USDC to user ATA → immediately deposits into vault PDA',
+      signer: 'Admin (Alex Bot) pays SOL fee; managed wallet keypair signs as depositor',
+    },
+    notes: [
+      'Bytes are smaller because ICF gave the SPL-transfer pipeline (~7.5 KB) to withdraw — these are the deposit-unique bytes only.',
+      'Web2 / managed wallets only. Phantom users never need this.',
+    ],
+    icf: ['withdraw'],
+  },
+];
+
+// Sanity: handler bytes sum to the handler-attributable total from the script
+const HANDLER_SUM = INSTRUCTIONS.reduce((s, ix) => s + ix.bytes, 0);  // 163,384 ✓
+
+const TRIM_ITEMS = [
+  {
+    title: 'close_contest — never called',
+    why: 'Defined in lib.rs but zero callers in turf-monster. Without it, settled-contest PDAs stay rent-locked forever.',
+    bytes: 3424, kind: 'dead',
+  },
+  {
+    title: 'enter_contest_direct_with_token — never called',
+    why: 'Phantom-and-tokens path was designed but never wired up. Phantom users currently pay USDC via enter_contest_direct; token users go through the managed-wallet variant.',
+    bytes: 15944, kind: 'dead',
+  },
+  {
+    title: 'Anchor IDL embed',
+    why: '26.6 KB of IDL JSON + Idl* instructions for runtime introspection (anchor idl fetch). The turf-monster build re-verifies a separate config/turf_vault.idl.json file at boot anyway — the embedded copy is never read by the Rails app. Rebuild with the no-idl Cargo feature to drop.',
+    bytes: 26592, kind: 'framework',
+  },
+  {
+    title: 'token_2022 instruction builders',
+    why: '~8 KB of spl_token_2022::instruction::TokenInstruction::pack and friends. The vault uses only classic SPL Token, but Anchor 0.32.1\'s #[derive(Accounts)] macro unconditionally references token_2022. Can\'t feature-flag off in this Anchor version.',
+    bytes: 8000, kind: 'framework',
+  },
+  {
+    title: 'Anchor IDL discriminator-format-error string tables',
+    why: 'A large chunk of .rodata is Anchor\'s ConstraintMint*, Constraint*Extension* enum names — most don\'t apply to this program. Stripped automatically by anchor-lang 0.33+ but pinned at 0.32.1 here.',
+    bytes: 4000, kind: 'maybe',
+  },
+];
+
+// ─── RENDER: HEADER STACKBAR ──────────────────────────────────
+
+function renderStackbar() {
+  const el = document.getElementById('stackbar');
+  const legend = document.getElementById('stackbar-legend');
+  const total = SECTIONS.reduce((s, x) => s + x.bytes, 0);
+  el.innerHTML = '';
+  legend.innerHTML = '';
+  SECTIONS.forEach(s => {
+    const w = (100 * s.bytes / total).toFixed(2);
+    const div = document.createElement('div');
+    div.style.width = w + '%';
+    div.style.background = s.color;
+    div.title = `${s.name} — ${s.bytes.toLocaleString()} bytes (${w}%) — ${s.desc}`;
+    div.innerHTML = `<span>${w >= 4 ? s.name : ''}</span>`;
+    el.appendChild(div);
+
+    const row = document.createElement('div');
+    row.className = 'legend-row';
+    row.innerHTML = `
+      <div class="sw" style="background:${s.color}"></div>
+      <div class="name"><strong>${s.name}</strong> <span class="dimmer">${s.desc}</span></div>
+      <div class="v">${s.bytes.toLocaleString()} · ${w}%</div>
+    `;
+    legend.appendChild(row);
+  });
+}
+
+// ─── RENDER: TEXT BREAKDOWN BARS ──────────────────────────────
+
+function renderTextBreakdown() {
+  const el = document.getElementById('text-breakdown');
+  const max = Math.max(...TEXT_BUCKETS.map(b => b.bytes));
+  TEXT_BUCKETS.forEach(b => {
+    const w = (100 * b.bytes / max).toFixed(1);
+    const pct = (100 * b.bytes / TEXT_SIZE).toFixed(1);
+    const row = document.createElement('div');
+    row.className = 'row-bar';
+    row.innerHTML = `
+      <div class="lbl">${b.name}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${w}%;background:${b.color}"></div></div>
+      <div class="v">${(b.bytes/1024).toFixed(1)} KB</div>
+      <div class="pct">${pct}%</div>
+    `;
+    row.title = b.detail;
+    el.appendChild(row);
+  });
+}
+
+// ─── RENDER: INSTRUCTION TABLE ────────────────────────────────
+
+let sortState = { col: 'bytes', dir: 'desc' };
+let filterState = 'all';
+
+const tbody = document.querySelector('#ix-table tbody');
+const ths = document.querySelectorAll('#ix-table th');
+const maxBytes = Math.max(...INSTRUCTIONS.map(i => i.bytes));
+
+function pillForStatus(s, label) {
+  return `<span class="pill ${s}">${label}</span>`;
+}
+function pillForAuth(ix) {
+  return `<span class="pill ${ix.authClass}">${ix.auth}</span>`;
+}
+
+function passesFilter(ix, f) {
+  if (f === 'all') return true;
+  if (f === 'live') return ix.status === 'live';
+  if (f === 'one') return ix.status === 'one';
+  if (f === 'partial') return ix.status === 'partial';
+  if (f === 'dead') return ix.status === 'dead';
+  if (f === 'web3-yes') return !ix.web3.file.startsWith('NOT CALLED');
+  if (f === 'web2-yes') return !ix.web2.file.startsWith('NOT CALLED');
+  return true;
+}
+
+function renderTable() {
+  tbody.innerHTML = '';
+  const sorted = INSTRUCTIONS.slice().filter(ix => passesFilter(ix, filterState));
+  sorted.sort((a,b) => {
+    const k = sortState.col;
+    const dir = sortState.dir === 'asc' ? 1 : -1;
+    let va, vb;
+    if (k === 'bytes') { va = a.bytes; vb = b.bytes; }
+    else if (k === 'name') { va = a.name; vb = b.name; }
+    else if (k === 'auth') { va = a.auth; vb = b.auth; }
+    else if (k === 'web3') { va = a.web3Short; vb = b.web3Short; }
+    else if (k === 'web2') { va = a.web2Short; vb = b.web2Short; }
+    else if (k === 'status') { va = a.statusLabel; vb = b.statusLabel; }
+    if (typeof va === 'number') return (va - vb) * dir;
+    return va.localeCompare(vb) * dir;
+  });
+
+  sorted.forEach((ix, i) => {
+    const barW = Math.round(60 * ix.bytes / maxBytes);
+    const icfBadge = ix.icf ? `<span class="icf-tag" title="Identical-code-folding shares bytes with: ${ix.icf.join(', ')}">ICF</span>` : '';
+    const tr = document.createElement('tr');
+    tr.className = 'ix-row';
+    tr.dataset.idx = INSTRUCTIONS.indexOf(ix);
+    tr.innerHTML = `
+      <td><span class="ix-name">${ix.name}</span>${icfBadge}</td>
+      <td><span class="ix-bytes">${ix.bytes.toLocaleString()}</span><span class="ix-bar" style="width:${barW}px"></span></td>
+      <td>${pillForAuth(ix)}</td>
+      <td class="dim">${ix.web3Short}</td>
+      <td class="dim">${ix.web2Short}</td>
+      <td>${pillForStatus(ix.status, ix.statusLabel)}</td>
+    `;
+    tr.addEventListener('click', () => toggleDetail(tr, ix));
+    tbody.appendChild(tr);
+  });
+}
+
+function toggleDetail(tr, ix) {
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains('detail')) {
+    next.remove();
+    return;
+  }
+  // Close other open details
+  document.querySelectorAll('tr.detail').forEach(d => d.remove());
+  const det = document.createElement('tr');
+  det.className = 'detail';
+  const icfHTML = ix.icf
+    ? `<div class="meta" style="margin-top:10px;"><strong>ICF shared with:</strong> ${ix.icf.join(', ')} — closure-folded; if you remove all variants in this set you free the shared bytes.</div>`
+    : '';
+  det.innerHTML = `
+    <td colspan="6">
+      <div class="panel">
+        <div>
+          <h4>Web3 path (browser / Phantom)</h4>
+          <div class="path">${ix.web3.file}</div>
+          ${ix.web3.fn && ix.web3.fn !== '—' ? `<div class="meta">Fn: <code>${ix.web3.fn}</code></div>` : ''}
+          <div class="meta"><strong>Trigger:</strong> ${ix.web3.trigger || '—'}</div>
+          <div class="meta"><strong>Signer:</strong> ${ix.web3.signer || '—'}</div>
+        </div>
+        <div>
+          <h4>Web2 path (Rails / Alex Bot)</h4>
+          <div class="path">${ix.web2.file}</div>
+          ${ix.web2.vault ? `<div class="meta"><strong>Service:</strong> <code>${ix.web2.vault}</code></div>` : ''}
+          ${ix.web2.altRake ? `<div class="meta"><strong>Also:</strong> <code>${ix.web2.altRake}</code></div>` : ''}
+          <div class="meta"><strong>Trigger:</strong> ${ix.web2.trigger || '—'}</div>
+          <div class="meta"><strong>Signer:</strong> ${ix.web2.signer || '—'}</div>
+        </div>
+        <div style="grid-column: 1 / -1;">
+          <h4>Notes</h4>
+          <ul class="notes">${ix.notes.map(n => `<li>${n}</li>`).join('')}</ul>
+          ${icfHTML}
+        </div>
+      </div>
+    </td>
+  `;
+  tr.parentNode.insertBefore(det, tr.nextSibling);
+}
+
+// Sort + filter wiring
+ths.forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.sort;
+    if (!col) return;
+    if (sortState.col === col) sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+    else { sortState.col = col; sortState.dir = (col === 'bytes' ? 'desc' : 'asc'); }
+    ths.forEach(t => t.classList.remove('sort-asc','sort-desc'));
+    th.classList.add(sortState.dir === 'asc' ? 'sort-asc' : 'sort-desc');
+    renderTable();
+  });
+});
+document.querySelectorAll('.filter-btn').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    filterState = b.dataset.filter;
+    renderTable();
+  });
+});
+
+// ─── RENDER: TRIM LIST ────────────────────────────────────────
+
+function renderTrim() {
+  const el = document.getElementById('trim-list');
+  const lamportsPerByte = 6960;
+  TRIM_ITEMS.forEach(t => {
+    const sol = (t.bytes * lamportsPerByte) / 1e9;
+    const row = document.createElement('div');
+    row.className = `trim-row ${t.kind}`;
+    row.innerHTML = `
+      <div>
+        <div class="title">${t.title}</div>
+        <div class="why">${t.why}</div>
+      </div>
+      <div class="bytes">−${t.bytes.toLocaleString()} bytes</div>
+      <div class="sol">−${sol.toFixed(3)} SOL</div>
+    `;
+    el.appendChild(row);
+  });
+  // total
+  const total = TRIM_ITEMS.reduce((s, t) => s + t.bytes, 0);
+  const totalSol = (total * lamportsPerByte) / 1e9;
+  const tot = document.createElement('div');
+  tot.className = 'trim-row';
+  tot.style.borderLeft = '3px solid var(--accent)';
+  tot.style.background = 'rgba(106,215,255,0.06)';
+  tot.innerHTML = `
+    <div>
+      <div class="title"><strong>If you cut all of the above</strong></div>
+      <div class="why">Realistic best-case shrink — assuming all currently unused handlers stay unused and you tolerate the no-idl rebuild.</div>
+    </div>
+    <div class="bytes">−${total.toLocaleString()} bytes</div>
+    <div class="sol" style="color: var(--accent)">−${totalSol.toFixed(3)} SOL</div>
+  `;
+  el.appendChild(tot);
+}
+
+// ─── COST CALCULATOR ──────────────────────────────────────────
+
+function recalc() {
+  const price = Math.max(0.1, parseFloat(document.getElementById('sol-price').value || '0'));
+  const lamportsPerByte = 6960;
+  const programDataLamports = (BINARY_SIZE + 128) * lamportsPerByte;
+  const programAccountLamports = (36 + 128) * lamportsPerByte;
+  const txFees = 1_000_000;
+  const permLamports = programDataLamports + programAccountLamports + txFees;
+  const floatLamports = programDataLamports; // buffer = same size as program data
+  const permSol = permLamports / 1e9;
+  const floatSol = floatLamports / 1e9;
+  const totalSol = permSol + floatSol;
+
+  document.getElementById('pd-lamports').textContent = programDataLamports.toLocaleString() + ' ℓ';
+  document.getElementById('perm-sol').textContent = '~' + permSol.toFixed(3) + ' SOL';
+  document.getElementById('perm-usd').textContent = '~$' + (permSol * price).toFixed(0);
+  document.getElementById('float-sol').textContent = '~' + floatSol.toFixed(3) + ' SOL';
+  document.getElementById('float-usd').textContent = '~$' + (floatSol * price).toFixed(0);
+  document.getElementById('walletmin-sol').textContent = '~' + totalSol.toFixed(2) + ' SOL';
+  document.getElementById('sol-total').textContent = totalSol.toFixed(2);
+  document.getElementById('usd-total').textContent = '$' + (totalSol * price).toFixed(0);
+}
+document.getElementById('sol-price').addEventListener('input', recalc);
+
+// ─── INIT ─────────────────────────────────────────────────────
+
+renderStackbar();
+renderTextBreakdown();
+renderTable();
+renderTrim();
+recalc();
+
+</script>
+</body>
+</html>

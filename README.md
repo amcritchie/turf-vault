@@ -4,6 +4,8 @@ Solana escrow program for contest entry fees and prize distribution. Built with 
 
 **Current deployment**: see [`docs/CURRENT_DEPLOYMENT.md`](docs/CURRENT_DEPLOYMENT.md) for live devnet/mainnet program IDs, signer set, and upgrade authority.
 
+**Docs index**: see [`docs/README.md`](docs/README.md) before following historical specs, audits, or generated reports.
+
 ![Anchor 0.32.1](https://img.shields.io/badge/Anchor-0.32.1-blue)
 ![Solana](https://img.shields.io/badge/Solana-Devnet-purple)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green)
