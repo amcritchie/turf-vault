@@ -2,6 +2,20 @@
 
 All notable changes to TurfVault are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Changed
+
+- Realigned the TypeScript verification suite around
+  `docs/VERIFICATION_MATRIX.md`. The suite now covers the current self-custody
+  instruction surface and no longer carries retired v0.15 deposit/withdraw or
+  daily-withdraw-cap cases.
+
+### Tests
+
+- Latest local proof, 2026-06-14: `23 passing` against an isolated local
+  validator on `127.0.0.1:8898`.
+
 ## [0.25.0] - 2026-06-10
 
 Admin-authorized username flows: a 1-of-3 vault-signer co-signature can waive
