@@ -349,5 +349,5 @@ mainnet app has no traffic and the devnet app is unchanged.
 - `CURRENT_DEPLOYMENT.md` — current authority details and Squads upgrade rule
   for subsequent releases.
 - `docs/v0.16-spec.md` — full v0.16 surface.
-- turf-monster `docs/ONCHAIN_UI_AUDIT_PROMPT.md` — the pre-mainnet UI
-  vulnerability audit (run this BEFORE §3 if not done already).
+- turf-monster `docs/SECURITY_REVIEW.md` — current app/on-chain security review
+  checklist to run before any mainnet-facing upgrade.
