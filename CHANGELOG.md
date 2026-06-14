@@ -64,9 +64,8 @@ deploy` is dead; `scripts/squad-upgrade.js`).
   both admin paths), non-signer admin rejected with 6000 on both, reserved
   names still rejected with 6020 on both plain paths, charset/min-length
   still enforced on the admin paths, and the owner signature still required
-  for `admin_set_username`. NOTE: the suite as a whole is still the v0.15.1
-  suite (references retired `deposit`/`withdraw`/`balance`) and does not run
-  against the current surface — pre-existing state, see CLAUDE.md "Testing".
+  for `admin_set_username`. NOTE: this was the pre-rewrite state. Current test
+  coverage is tracked in `docs/VERIFICATION_MATRIX.md`.
 
 ## [0.24.0] - 2026-06-07
 
@@ -448,7 +447,7 @@ layout changes, so no migration needed.
   - Upgrade authority moved from the single keypair `4AQMNwhyZtsaCLx3Dv9G5a2rXaJ6M221FYQw6sommRWz` to the Squads V4 vault PDA `BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC`. A program upgrade now requires the same 2-of-3 cosign (Alex Bot / Alex / Mason) as a treasury op — closes the single-key code-deployment risk.
   - Squad: multisig PDA `7nRuVw3VZFC6z85tYVDitPnaUHZCkqLpJRSTBNtPmtZB`, threshold 2, autonomous (config changes require a member vote). Squads V4 program `SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf`.
   - Migration was verified end-to-end: created the Squad, proved vault execution with a trivial transaction, transferred authority, then rehearsed a full no-op program upgrade through the Squad (propose → approve ×2 → execute). turf_vault re-deployed at slot 463533624 via the Squad path.
-  - **`anchor deploy` no longer works.** Upgrades go through `scripts/squad-upgrade.js` — see CLAUDE.md "Deploying an upgrade".
+  - **`anchor deploy` no longer works.** Upgrades go through `scripts/squad-upgrade.js` — see `docs/CURRENT_DEPLOYMENT.md` and `RUNBOOK.md`.
   - Known caveat: while operated autonomously (Alex Bot + Mason keys both in the operator's 1Password), the 2-of-3 is effectively single-trust-domain. Genuine 2-of-3 protection requires Alex + Mason to hold keys in separate domains — tracked as a follow-up.
 
 ## [0.11.1] - 2026-05-19

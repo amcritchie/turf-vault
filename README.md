@@ -182,7 +182,7 @@ Create → Enter → Settle → Close
 
 ## Development
 
-See [`docs/CURRENT_DEPLOYMENT.md`](docs/CURRENT_DEPLOYMENT.md) for live deployment identity and [`docs/VERIFICATION_MATRIX.md`](docs/VERIFICATION_MATRIX.md) for the current instruction proof checklist. `CLAUDE.md` is archive-only migration context.
+See [`docs/CURRENT_DEPLOYMENT.md`](docs/CURRENT_DEPLOYMENT.md) for live deployment identity and [`docs/VERIFICATION_MATRIX.md`](docs/VERIFICATION_MATRIX.md) for the current instruction proof checklist.
 
 ### Prerequisites
 
