@@ -1,5 +1,12 @@
 # TurfVault — Development Instructions
 
+> **ARCHIVE-ONLY MIGRATION CONTEXT.** This file is no longer the agent
+> entrypoint or source of truth. Start at `/Users/alex/projects/AGENTS.md`.
+> Current TurfVault docs live in `README.md`, `docs/README.md`,
+> `docs/CURRENT_DEPLOYMENT.md`, and `docs/KEY_ROTATION.md`. Do not update
+> this file except to remove it after Claude compatibility with generated
+> `AGENTS.md` is verified.
+
 ## Project Overview
 
 Anchor smart contract for contest escrow on Solana. Backend for Turf Monster (Rails pick'em app).

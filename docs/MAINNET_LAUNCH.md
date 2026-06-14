@@ -322,9 +322,8 @@ mainnet app has no traffic and the devnet app is unchanged.
 1. Update DNS / Heroku custom domain attachment.
 2. Announce externally.
 3. Watch Sentry + Heroku logs for the next ~hour.
-4. Update `~/.claude/projects/-Users-alex-projects/memory/MEMORY.md` —
-   replace the "Turf mainnet launch in progress" entry with a
-   "Turf mainnet live" entry (date, program ID, vault PDA, Heroku app).
+4. Update `docs/CURRENT_DEPLOYMENT.md` and the McRitchie Studio agent docs with
+   the live date, program ID, vault PDA, and Heroku app.
 
 ---
 
@@ -347,8 +346,8 @@ mainnet app has no traffic and the devnet app is unchanged.
 
 - `RUNBOOK.md` — devnet-focused; includes Build/Deploy/Test failure
   recovery commands that apply to mainnet too.
-- `CLAUDE.md` — architecture overview, Squads upgrade flow for SUBSEQUENT
-  releases.
+- `CURRENT_DEPLOYMENT.md` — current authority details and Squads upgrade rule
+  for subsequent releases.
 - `docs/v0.16-spec.md` — full v0.16 surface.
 - turf-monster `docs/ONCHAIN_UI_AUDIT_PROMPT.md` — the pre-mainnet UI
   vulnerability audit (run this BEFORE §3 if not done already).
