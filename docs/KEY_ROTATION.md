@@ -1,5 +1,13 @@
 # TurfVault — Key-Rotation Redeploy Plan (Alex Bot key compromise)
 
+> **HISTORICAL SUPERSEDED PLAN. DO NOT EXECUTE AS CURRENT PROCEDURE.**
+> The retired Alex Bot key `F6f8...KzhZ` has zero devnet authority in the
+> current deployment record. Current live signer facts live in
+> [`CURRENT_DEPLOYMENT.md`](CURRENT_DEPLOYMENT.md). Current source includes
+> `update_signers`, so future signer rotation should be planned from current
+> source, `CURRENT_DEPLOYMENT.md`, and the Squads state rather than replaying
+> this redeploy plan.
+>
 > **STATUS: DRAFT / PLAN ONLY. DO NOT EXECUTE.**
 > This document is the redeploy runbook for rotating a leaked **Alex Bot**
 > signer key off TurfVault. Execution is **gated** on:

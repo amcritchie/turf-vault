@@ -182,7 +182,7 @@ Create → Enter → Settle → Close
 
 ## Development
 
-See [`docs/CURRENT_DEPLOYMENT.md`](docs/CURRENT_DEPLOYMENT.md) for live deployment identity. `CLAUDE.md` remains legacy migration context while neutral app docs are being extracted.
+See [`docs/CURRENT_DEPLOYMENT.md`](docs/CURRENT_DEPLOYMENT.md) for live deployment identity and [`docs/VERIFICATION_MATRIX.md`](docs/VERIFICATION_MATRIX.md) for the current instruction proof checklist. `CLAUDE.md` is archive-only migration context.
 
 ### Prerequisites
 
@@ -204,6 +204,9 @@ anchor test
 ```
 
 Tests run against a local validator. The TypeScript suite is being realigned from the old deposit/withdraw contract shape to the current self-custody instruction surface; check the latest test status before treating it as launch evidence.
+
+Use [`docs/VERIFICATION_MATRIX.md`](docs/VERIFICATION_MATRIX.md) as the target
+coverage map while realigning the suite.
 
 ### Deploy
 

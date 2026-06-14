@@ -36,8 +36,8 @@ use instructions::*;
 
 // Cluster-gated declare_id!. Devnet/localnet builds compile-time bind to the
 // current devnet program. Mainnet builds (--features mainnet) bind to the
-// v0.20 key-rotation program ID DaFv... (fresh Squads upgrade authority; see
-// docs/KEY_ROTATION.md / docs/MAINNET_LAUNCH.md section 3).
+// current mainnet program ID. See docs/CURRENT_DEPLOYMENT.md for live identity;
+// KEY_ROTATION.md and MAINNET_LAUNCH.md are historical artifacts only.
 //
 // Anchor.toml's [programs.*] entries are advisory (CLI tooling) and MUST
 // agree with whichever declare_id! the active feature set selects.
