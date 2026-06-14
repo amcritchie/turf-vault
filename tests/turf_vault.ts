@@ -3,16 +3,21 @@ import { Program } from "@coral-xyz/anchor";
 import { TurfVault } from "../target/types/turf_vault";
 import {
   createMint,
-  createAccount,
-  mintTo,
   getAccount,
+  getOrCreateAssociatedTokenAccount,
+  mintTo,
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
-import { Keypair, PublicKey, SystemProgram, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import {
+  Keypair,
+  LAMPORTS_PER_SOL,
+  PublicKey,
+  SystemProgram,
+} from "@solana/web3.js";
 import { expect } from "chai";
 import { createHash } from "crypto";
 
-describe("turf_vault", () => {
+describe("turf_vault verification matrix", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
 
@@ -20,111 +25,451 @@ describe("turf_vault", () => {
   const admin = provider.wallet as anchor.Wallet;
   const connection = provider.connection;
 
-  // Test keypairs
+  const DECIMALS = 6;
+  const MAX_CURRENCIES = 16;
+  const DEFAULT_SEASON_ID = 1;
+  const DEFAULT_SEED_SCHEDULE = [25, 19, 14, 10, 7];
+  const QUEST_SEEDS = [12, 18, 45, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+  const DEFAULT_PUBKEY = new PublicKey("11111111111111111111111111111111");
+
+  let signer2: Keypair;
+  let signer3: Keypair;
+  let treasury: Keypair;
+  let stranger: Keypair;
   let user1: Keypair;
   let user2: Keypair;
-  let signer2: Keypair;  // Second multisig signer (was adminBackup)
-  let signer3: Keypair;  // Third multisig signer (Mason)
 
-  // Token mints
   let usdcMint: PublicKey;
   let usdtMint: PublicKey;
+  let bonusMint: PublicKey;
 
-  // PDAs
   let vaultStatePda: PublicKey;
-  let vaultUsdcPda: PublicKey;
-  let vaultUsdtPda: PublicKey;
-
-  // User token accounts
-  let user1UsdcAccount: PublicKey;
-  let user1UsdtAccount: PublicKey;
-  let user2UsdcAccount: PublicKey;
-  let adminUsdcAccount: PublicKey;
-  let signer2UsdcAccount: PublicKey;
-
-  // Contest
-  const contestSlug = "turf-totals-v1-matchday-1";
-  const contestId = createHash("sha256").update(contestSlug).digest();
-  const DECIMALS = 6;
-  const toTokenAmount = (dollars: number) => dollars * 10 ** DECIMALS;
-
-  // Default season used by all entry tests (created in the season describe block)
-  const DEFAULT_SEASON_ID = 1;
-  const DEFAULT_SEED_SCHEDULE = [25, 19, 14, 10, 7] as const;
-  const deriveSeasonPda = (seasonId: number): PublicKey => {
-    const buf = Buffer.alloc(4);
-    buf.writeUInt32LE(seasonId);
-    const [pda] = PublicKey.findProgramAddressSync(
-      [Buffer.from("season"), buf],
-      program.programId
-    );
-    return pda;
-  };
-  const makeSeasonName = (s: string): number[] => {
-    const buf = Buffer.alloc(32);
-    buf.write(s, 0, "utf8");
-    return Array.from(buf);
-  };
-  // username: [u8; 32] — same 32-byte zero-padded encoding as a season name.
-  const makeUsername = (s: string): number[] => makeSeasonName(s);
-  const decodeUsername = (bytes: any): string =>
-    Buffer.from(bytes).toString("utf8").replace(/\0+$/, "");
+  let usdcOpRevPda: PublicKey;
+  let usdtOpRevPda: PublicKey;
+  let bonusOpRevPda: PublicKey;
   let defaultSeasonPda: PublicKey;
 
+  let adminUsdcAta: PublicKey;
+  let signer2UsdcAta: PublicKey;
+  let treasuryUsdcAta: PublicKey;
+  let treasuryUsdtAta: PublicKey;
+  let wrongTreasuryUsdtAta: PublicKey;
+  let user1UsdcAta: PublicKey;
+  let user1UsdtAta: PublicKey;
+  let user1BonusAta: PublicKey;
+  let user2UsdcAta: PublicKey;
+  let user2UsdtAta: PublicKey;
+
+  let paidContest: ContestFixture;
+  let bonusContest: ContestFixture;
+
+  type ContestFixture = {
+    id: Buffer;
+    contestPda: PublicKey;
+    prizePoolPda: PublicKey;
+  };
+
+  const amount = (tokens: number): number => tokens * 10 ** DECIMALS;
+  const bn = (value: number | string): anchor.BN => new anchor.BN(value);
+  const now = (): number => Math.floor(Date.now() / 1000);
+  const tokenAmount = async (account: PublicKey): Promise<number> =>
+    Number((await getAccount(connection, account)).amount);
+
+  const bytes = (value: string, length: number): number[] => {
+    const out = Buffer.alloc(length);
+    out.write(value, 0, "utf8");
+    return Array.from(out);
+  };
+
+  const username = (value: string): number[] => bytes(value, 32);
+  const reason = (value: string): number[] => bytes(value, 64);
+  const sourceRef = (value: string): number[] => bytes(value, 64);
+  const sourceRefHash = (ref: number[]): number[] =>
+    Array.from(createHash("sha256").update(Buffer.from(ref)).digest());
+
+  const decodeFixedBytes = (value: number[] | Uint8Array): string =>
+    Buffer.from(value).toString("utf8").replace(/\0+$/, "");
+
+  const contestId = (slug: string): Buffer =>
+    createHash("sha256").update(slug).digest();
+
+  const u32Le = (value: number): Buffer => {
+    const buffer = Buffer.alloc(4);
+    buffer.writeUInt32LE(value);
+    return buffer;
+  };
+
+  const feeSchedule = (
+    fees: Record<number, number> = { 0: amount(9) }
+  ): anchor.BN[] => {
+    const values = Array.from({ length: MAX_CURRENCIES }, () => bn(0));
+    for (const [idx, value] of Object.entries(fees)) {
+      values[Number(idx)] = bn(value);
+    }
+    return values;
+  };
+
+  const deriveVault = (): PublicKey =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from("vault")],
+      program.programId
+    )[0];
+
+  const deriveOpRev = (mint: PublicKey): PublicKey =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from("op_rev"), mint.toBuffer()],
+      program.programId
+    )[0];
+
+  const deriveContest = (id: Buffer): PublicKey =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from("contest"), id],
+      program.programId
+    )[0];
+
+  const derivePrizePool = (id: Buffer): PublicKey =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from("prize_pool"), id],
+      program.programId
+    )[0];
+
+  const deriveEntry = (
+    id: Buffer,
+    wallet: PublicKey,
+    entryNum: number
+  ): PublicKey =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from("entry"), id, wallet.toBuffer(), u32Le(entryNum)],
+      program.programId
+    )[0];
+
+  const deriveUser = (wallet: PublicKey): PublicKey =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from("user"), wallet.toBuffer()],
+      program.programId
+    )[0];
+
+  const deriveSeason = (seasonId: number): PublicKey =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from("season"), u32Le(seasonId)],
+      program.programId
+    )[0];
+
+  const deriveEntryToken = (hash: number[]): PublicKey =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from("entry_token"), Buffer.from(hash)],
+      program.programId
+    )[0];
+
+  const deriveSeedGrant = (
+    wallet: PublicKey,
+    kind: number,
+    invitee: PublicKey
+  ): PublicKey =>
+    PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("seed_grant"),
+        wallet.toBuffer(),
+        Buffer.from([kind]),
+        invitee.toBuffer(),
+      ],
+      program.programId
+    )[0];
+
+  const statusName = (status: any): string => Object.keys(status)[0];
+
+  const expectRejected = async (
+    promise: Promise<unknown>,
+    pattern: RegExp
+  ): Promise<void> => {
+    try {
+      await promise;
+      expect.fail(`expected rejection matching ${pattern}`);
+    } catch (err: any) {
+      expect(err.toString()).to.match(pattern);
+    }
+  };
+
+  const fund = async (wallet: PublicKey, sol = 5): Promise<void> => {
+    const tx = new anchor.web3.Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: admin.publicKey,
+        toPubkey: wallet,
+        lamports: sol * LAMPORTS_PER_SOL,
+      })
+    );
+    await provider.sendAndConfirm(tx);
+  };
+
+  const ata = async (
+    mint: PublicKey,
+    owner: PublicKey,
+    initialAmount = 0
+  ): Promise<PublicKey> => {
+    const account = await getOrCreateAssociatedTokenAccount(
+      connection,
+      admin.payer,
+      mint,
+      owner
+    );
+    if (initialAmount > 0) {
+      await mintTo(
+        connection,
+        admin.payer,
+        mint,
+        account.address,
+        admin.publicKey,
+        initialAmount
+      );
+    }
+    return account.address;
+  };
+
+  const createUser = async (
+    wallet: PublicKey,
+    name: string,
+    payer = admin.publicKey
+  ): Promise<PublicKey> => {
+    const userPda = deriveUser(wallet);
+    await program.methods
+      .createUserAccount(wallet, username(name) as any)
+      .accountsStrict({
+        payer,
+        userAccount: userPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+    return userPda;
+  };
+
+  const createSeason = async (
+    seasonId: number,
+    name = "World Cup 2026"
+  ): Promise<PublicKey> => {
+    const seasonPda = deriveSeason(seasonId);
+    await program.methods
+      .createSeason(
+        seasonId,
+        bytes(name, 32) as any,
+        DEFAULT_SEED_SCHEDULE.map((n) => bn(n)) as any,
+        QUEST_SEEDS.map((n) => bn(n)) as any,
+        bn(now())
+      )
+      .accountsStrict({
+        admin: admin.publicKey,
+        vaultState: vaultStatePda,
+        season: seasonPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+    return seasonPda;
+  };
+
+  const createContest = async (
+    slug: string,
+    options: {
+      fees?: Record<number, number>;
+      maxEntries?: number;
+      payouts?: number[];
+      prizePool?: number;
+      lockTimestamp?: number;
+      payer?: PublicKey;
+      creator?: PublicKey;
+      creatorTokenAccount?: PublicKey;
+      signers?: Keypair[];
+    } = {}
+  ): Promise<ContestFixture> => {
+    const id = contestId(slug);
+    const contestPda = deriveContest(id);
+    const prizePoolPda = derivePrizePool(id);
+    const prizePool = options.prizePool ?? amount(0);
+    const payouts = options.payouts ?? (prizePool > 0 ? [prizePool] : []);
+
+    await program.methods
+      .createContest(
+        Array.from(id) as any,
+        DEFAULT_SEASON_ID,
+        feeSchedule(options.fees) as any,
+        options.maxEntries ?? 5,
+        payouts.map((p) => bn(p)) as any,
+        bn(prizePool),
+        bn(options.lockTimestamp ?? 0)
+      )
+      .accountsStrict({
+        payer: options.payer ?? admin.publicKey,
+        creator: options.creator ?? admin.publicKey,
+        vaultState: vaultStatePda,
+        contest: contestPda,
+        prizePool: prizePoolPda,
+        payoutMint: usdcMint,
+        creatorTokenAccount: options.creatorTokenAccount ?? adminUsdcAta,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+      })
+      .signers(options.signers ?? [])
+      .rpc();
+
+    return { id, contestPda, prizePoolPda };
+  };
+
+  const enterPaid = async (
+    contest: ContestFixture,
+    user: Keypair,
+    userAccount: PublicKey,
+    userTokenAccount: PublicKey,
+    currencyMint: PublicKey,
+    opRevAta: PublicKey,
+    currencyIdx: number,
+    entryNum: number
+  ): Promise<PublicKey> => {
+    const entryPda = deriveEntry(contest.id, user.publicKey, entryNum);
+    await program.methods
+      .enterContest(entryNum, currencyIdx)
+      .accountsStrict({
+        payer: admin.publicKey,
+        user: user.publicKey,
+        userAccount,
+        vaultState: vaultStatePda,
+        contest: contest.contestPda,
+        contestEntry: entryPda,
+        currencyMint,
+        userTokenAccount,
+        opRevAta,
+        season: defaultSeasonPda,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([user])
+      .rpc();
+    return entryPda;
+  };
+
+  const mintEntryToken = async (
+    owner: PublicKey,
+    refText: string
+  ): Promise<{ pda: PublicKey; ref: number[]; hash: number[] }> => {
+    const ref = sourceRef(refText);
+    const hash = sourceRefHash(ref);
+    const pda = deriveEntryToken(hash);
+    await program.methods
+      .mintEntryToken(0, ref as any, hash as any)
+      .accountsStrict({
+        admin: admin.publicKey,
+        vaultState: vaultStatePda,
+        userWallet: owner,
+        entryToken: pda,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+    return { pda, ref, hash };
+  };
+
+  const enterWithToken = async (
+    contest: ContestFixture,
+    user: Keypair,
+    userAccount: PublicKey,
+    entryToken: PublicKey,
+    entryNum: number
+  ): Promise<PublicKey> => {
+    const entryPda = deriveEntry(contest.id, user.publicKey, entryNum);
+    await program.methods
+      .enterContestWithToken(entryNum)
+      .accountsStrict({
+        payer: admin.publicKey,
+        user: user.publicKey,
+        userAccount,
+        vaultState: vaultStatePda,
+        contest: contest.contestPda,
+        contestEntry: entryPda,
+        entryToken,
+        season: defaultSeasonPda,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([user])
+      .rpc();
+    return entryPda;
+  };
+
+  const lockContestNow = async (contest: ContestFixture): Promise<void> => {
+    await program.methods
+      .setContestLockTime(bn(now() - 1))
+      .accountsStrict({
+        admin: admin.publicKey,
+        cosigner: null,
+        vaultState: vaultStatePda,
+        contest: contest.contestPda,
+      })
+      .rpc();
+  };
+
   before(async () => {
-    // Create test users and fund them
-    user1 = Keypair.generate();
-    user2 = Keypair.generate();
     signer2 = Keypair.generate();
     signer3 = Keypair.generate();
+    treasury = Keypair.generate();
+    stranger = Keypair.generate();
+    user1 = Keypair.generate();
+    user2 = Keypair.generate();
 
-    // Fund test users with SOL (transfer from admin instead of airdrop — v3.1 airdrop is broken)
-    for (const user of [user1, user2, signer2, signer3]) {
-      const tx = new anchor.web3.Transaction().add(
-        anchor.web3.SystemProgram.transfer({
-          fromPubkey: admin.publicKey,
-          toPubkey: user.publicKey,
-          lamports: 10 * LAMPORTS_PER_SOL,
-        })
-      );
-      await provider.sendAndConfirm(tx);
+    for (const wallet of [signer2, signer3, treasury, stranger, user1, user2]) {
+      await fund(wallet.publicKey, 10);
     }
 
-    // Create USDC and USDT mints (admin is mint authority)
-    usdcMint = await createMint(connection, admin.payer, admin.publicKey, null, DECIMALS);
-    usdtMint = await createMint(connection, admin.payer, admin.publicKey, null, DECIMALS);
+    usdcMint = await createMint(
+      connection,
+      admin.payer,
+      admin.publicKey,
+      null,
+      DECIMALS
+    );
+    usdtMint = await createMint(
+      connection,
+      admin.payer,
+      admin.publicKey,
+      null,
+      DECIMALS
+    );
+    bonusMint = await createMint(
+      connection,
+      admin.payer,
+      admin.publicKey,
+      null,
+      DECIMALS
+    );
 
-    // Derive PDAs
-    [vaultStatePda] = PublicKey.findProgramAddressSync([Buffer.from("vault")], program.programId);
-    [vaultUsdcPda] = PublicKey.findProgramAddressSync([Buffer.from("vault_usdc")], program.programId);
-    [vaultUsdtPda] = PublicKey.findProgramAddressSync([Buffer.from("vault_usdt")], program.programId);
+    vaultStatePda = deriveVault();
+    usdcOpRevPda = deriveOpRev(usdcMint);
+    usdtOpRevPda = deriveOpRev(usdtMint);
+    bonusOpRevPda = deriveOpRev(bonusMint);
+    defaultSeasonPda = deriveSeason(DEFAULT_SEASON_ID);
 
-    // Create user token accounts
-    user1UsdcAccount = await createAccount(connection, admin.payer, usdcMint, user1.publicKey);
-    user1UsdtAccount = await createAccount(connection, admin.payer, usdtMint, user1.publicKey);
-    user2UsdcAccount = await createAccount(connection, admin.payer, usdcMint, user2.publicKey);
-    adminUsdcAccount = await createAccount(connection, admin.payer, usdcMint, admin.publicKey);
-    signer2UsdcAccount = await createAccount(connection, admin.payer, usdcMint, signer2.publicKey);
-
-    // Mint test tokens to users and admins
-    await mintTo(connection, admin.payer, usdcMint, user1UsdcAccount, admin.publicKey, toTokenAmount(100));
-    await mintTo(connection, admin.payer, usdtMint, user1UsdtAccount, admin.publicKey, toTokenAmount(50));
-    await mintTo(connection, admin.payer, usdcMint, user2UsdcAccount, admin.publicKey, toTokenAmount(100));
-    await mintTo(connection, admin.payer, usdcMint, adminUsdcAccount, admin.publicKey, toTokenAmount(500));
-    await mintTo(connection, admin.payer, usdcMint, signer2UsdcAccount, admin.publicKey, toTokenAmount(100));
+    adminUsdcAta = await ata(usdcMint, admin.publicKey, amount(1_000));
+    signer2UsdcAta = await ata(usdcMint, signer2.publicKey, amount(100));
+    treasuryUsdcAta = await ata(usdcMint, treasury.publicKey);
+    treasuryUsdtAta = await ata(usdtMint, treasury.publicKey);
+    wrongTreasuryUsdtAta = await ata(usdtMint, user2.publicKey);
+    user1UsdcAta = await ata(usdcMint, user1.publicKey, amount(100));
+    user1UsdtAta = await ata(usdtMint, user1.publicKey, amount(100));
+    user1BonusAta = await ata(bonusMint, user1.publicKey, amount(50));
+    user2UsdcAta = await ata(usdcMint, user2.publicKey, amount(100));
+    user2UsdtAta = await ata(usdtMint, user2.publicKey, amount(100));
   });
 
   describe("initialize", () => {
-    it("initializes the vault with 3 signers and threshold 2", async () => {
+    it("creates VaultState and pins signers, treasury, USDC slot 0, and USDT slot 1", async () => {
       await program.methods
-        .initialize([admin.publicKey, signer2.publicKey, signer3.publicKey], 2)
+        .initialize(
+          [admin.publicKey, signer2.publicKey, signer3.publicKey],
+          2,
+          treasury.publicKey
+        )
         .accountsStrict({
           admin: admin.publicKey,
           vaultState: vaultStatePda,
-          usdcMint,
-          usdtMint,
-          vaultUsdc: vaultUsdcPda,
-          vaultUsdt: vaultUsdtPda,
+          payoutMint: usdcMint,
+          secondCurrencyMint: usdtMint,
+          payoutOpRevAta: usdcOpRevPda,
+          secondOpRevAta: usdtOpRevPda,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
           rent: anchor.web3.SYSVAR_RENT_PUBKEY,
@@ -132,2388 +477,348 @@ describe("turf_vault", () => {
         .rpc();
 
       const vault = await program.account.vaultState.fetch(vaultStatePda);
-      expect(vault.signers[0].toBase58()).to.equal(admin.publicKey.toBase58());
-      expect(vault.signers[1].toBase58()).to.equal(signer2.publicKey.toBase58());
-      expect(vault.signers[2].toBase58()).to.equal(signer3.publicKey.toBase58());
+      expect(vault.signers.map((s: PublicKey) => s.toBase58())).to.deep.equal([
+        admin.publicKey.toBase58(),
+        signer2.publicKey.toBase58(),
+        signer3.publicKey.toBase58(),
+      ]);
       expect(vault.threshold).to.equal(2);
-      expect(vault.usdcMint.toBase58()).to.equal(usdcMint.toBase58());
-      expect(vault.usdtMint.toBase58()).to.equal(usdtMint.toBase58());
+      expect(vault.paused).to.equal(0);
+      expect(vault.payoutMint.toBase58()).to.equal(usdcMint.toBase58());
+      expect(vault.treasuryAuthority.toBase58()).to.equal(
+        treasury.publicKey.toBase58()
+      );
+      expect(vault.acceptedCurrencies[0].mint.toBase58()).to.equal(
+        usdcMint.toBase58()
+      );
+      expect(vault.acceptedCurrencies[0].opRevAta.toBase58()).to.equal(
+        usdcOpRevPda.toBase58()
+      );
+      expect(vault.acceptedCurrencies[0].active).to.equal(1);
+      expect(vault.acceptedCurrencies[1].mint.toBase58()).to.equal(
+        usdtMint.toBase58()
+      );
+      expect(vault.acceptedCurrencies[1].opRevAta.toBase58()).to.equal(
+        usdtOpRevPda.toBase58()
+      );
+      expect(vault.acceptedCurrencies[1].active).to.equal(1);
     });
   });
 
-  describe("create_user_account", () => {
-    it("creates user account for user1", async () => {
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user1.publicKey.toBuffer()],
-        program.programId
-      );
+  describe("user accounts and usernames", () => {
+    it("permissionless payer creates wallet user accounts", async () => {
+      const user1Pda = await createUser(user1.publicKey, "user-one");
+      const user2Pda = await createUser(user2.publicKey, "user-two");
 
-      await program.methods
-        .createUserAccount(user1.publicKey, makeUsername("user-one"))
-        .accountsStrict({
-          payer: admin.publicKey,
-          userAccount: userAccountPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const account = await program.account.userAccount.fetch(userAccountPda);
-      expect(account.wallet.toBase58()).to.equal(user1.publicKey.toBase58());
-      expect(account.balance.toNumber()).to.equal(0);
-      expect(account.seeds.toNumber()).to.equal(0);
-      expect(decodeUsername(account.username)).to.equal("user-one");
+      const account1 = await program.account.userAccount.fetch(user1Pda);
+      const account2 = await program.account.userAccount.fetch(user2Pda);
+      expect(account1.wallet.toBase58()).to.equal(user1.publicKey.toBase58());
+      expect(account1.seeds.toNumber()).to.equal(0);
+      expect(account1.entries).to.equal(0);
+      expect(decodeFixedBytes(account1.username)).to.equal("user-one");
+      expect(account2.wallet.toBase58()).to.equal(user2.publicKey.toBase58());
     });
 
-    it("creates user account for user2", async () => {
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user2.publicKey.toBuffer()],
-        program.programId
-      );
+    it("enforces username owner, charset, length, and reserved-prefix rules", async () => {
+      const user1Pda = deriveUser(user1.publicKey);
 
       await program.methods
-        .createUserAccount(user2.publicKey, makeUsername("user-two"))
-        .accountsStrict({
-          payer: admin.publicKey,
-          userAccount: userAccountPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const account = await program.account.userAccount.fetch(userAccountPda);
-      expect(account.wallet.toBase58()).to.equal(user2.publicKey.toBase58());
-      expect(decodeUsername(account.username)).to.equal("user-two");
-    });
-  });
-
-  describe("set_username", () => {
-    it("the account owner can set their username", async () => {
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user1.publicKey.toBuffer()],
-        program.programId
-      );
-
-      await program.methods
-        .setUsername(makeUsername("renamed-user1"))
-        .accountsStrict({
-          wallet: user1.publicKey,
-          userAccount: userAccountPda,
-        })
+        .setUsername(username("renamed-user") as any)
+        .accountsStrict({ wallet: user1.publicKey, userAccount: user1Pda })
         .signers([user1])
         .rpc();
 
-      const account = await program.account.userAccount.fetch(userAccountPda);
-      expect(decodeUsername(account.username)).to.equal("renamed-user1");
-    });
+      const renamed = await program.account.userAccount.fetch(user1Pda);
+      expect(decodeFixedBytes(renamed.username)).to.equal("renamed-user");
 
-    it("rejects a non-owner setting someone else's username", async () => {
-      const [user1AccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user1.publicKey.toBuffer()],
-        program.programId
-      );
-
-      try {
-        await program.methods
-          .setUsername(makeUsername("hacked"))
-          .accountsStrict({
-            wallet: user2.publicKey,
-            userAccount: user1AccountPda,
-          })
+      await expectRejected(
+        program.methods
+          .setUsername(username("hacked") as any)
+          .accountsStrict({ wallet: user2.publicKey, userAccount: user1Pda })
           .signers([user2])
-          .rpc();
-        expect.fail("should have rejected a non-owner");
-      } catch (err: any) {
-        expect(err.toString()).to.match(/ConstraintSeeds|Unauthorized|seeds/i);
-      }
-    });
-
-    // v0.15.1 prelaunch audit C2: on-chain username validation.
-
-    it("rejects a reserved prefix (admin)", async () => {
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user1.publicKey.toBuffer()],
-        program.programId
+          .rpc(),
+        /ConstraintSeeds|Unauthorized|seeds/i
       );
-      try {
-        await program.methods
-          .setUsername(makeUsername("admin-tom"))
-          .accountsStrict({ wallet: user1.publicKey, userAccount: userAccountPda })
+      await expectRejected(
+        program.methods
+          .setUsername(username("admin-tom") as any)
+          .accountsStrict({ wallet: user1.publicKey, userAccount: user1Pda })
           .signers([user1])
-          .rpc();
-        expect.fail("should have rejected reserved prefix");
-      } catch (err: any) {
-        expect(err.toString()).to.match(/UsernameReserved/i);
-      }
-    });
-
-    it("rejects a reserved prefix case-insensitively (AdMiN)", async () => {
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user1.publicKey.toBuffer()],
-        program.programId
+          .rpc(),
+        /UsernameReserved/i
       );
-      try {
-        await program.methods
-          .setUsername(makeUsername("AdMiNTester"))
-          .accountsStrict({ wallet: user1.publicKey, userAccount: userAccountPda })
+      await expectRejected(
+        program.methods
+          .setUsername(username("ab") as any)
+          .accountsStrict({ wallet: user1.publicKey, userAccount: user1Pda })
           .signers([user1])
-          .rpc();
-        expect.fail("should have rejected reserved prefix (case-insensitive)");
-      } catch (err: any) {
-        expect(err.toString()).to.match(/UsernameReserved/i);
-      }
-    });
-
-    it("rejects a username shorter than 3 characters", async () => {
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user1.publicKey.toBuffer()],
-        program.programId
+          .rpc(),
+        /UsernameTooShort/i
       );
-      try {
-        await program.methods
-          .setUsername(makeUsername("ab"))
-          .accountsStrict({ wallet: user1.publicKey, userAccount: userAccountPda })
+
+      const invalid = new Array(32).fill(0);
+      invalid[0] = 0x68;
+      invalid[1] = 0x01;
+      invalid[2] = 0x69;
+      await expectRejected(
+        program.methods
+          .setUsername(invalid as any)
+          .accountsStrict({ wallet: user1.publicKey, userAccount: user1Pda })
           .signers([user1])
-          .rpc();
-        expect.fail("should have rejected too-short username");
-      } catch (err: any) {
-        expect(err.toString()).to.match(/UsernameTooShort/i);
-      }
-    });
-
-    it("rejects a username containing non-printable bytes", async () => {
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user1.publicKey.toBuffer()],
-        program.programId
-      );
-      // Hand-craft a 32-byte array with a control char (0x01) in the middle.
-      const bytes = new Array(32).fill(0);
-      bytes[0] = 0x68; // h
-      bytes[1] = 0x01; // ← invalid (control char)
-      bytes[2] = 0x69; // i
-      try {
-        await program.methods
-          .setUsername(bytes as any)
-          .accountsStrict({ wallet: user1.publicKey, userAccount: userAccountPda })
-          .signers([user1])
-          .rpc();
-        expect.fail("should have rejected non-printable bytes");
-      } catch (err: any) {
-        expect(err.toString()).to.match(/UsernameInvalidChars/i);
-      }
-    });
-  });
-
-  // v0.25: admin-authorized username flows. A 1-of-3 vault-signer co-signature
-  // waives ONLY the reserved-prefix check (audit C2) — charset + min-length
-  // stay enforced. Privilege = vault_state.is_signer(admin), NOT membership of
-  // the target wallet (the operator house wallet is NOT a vault signer).
-  describe("admin username flows (v0.25)", () => {
-    // The operator house wallet — gets a reserved "turf*" username via the
-    // admin path. Never a vault signer.
-    let houseWallet: Keypair;
-    let houseAccountPda: PublicKey;
-
-    before(() => {
-      houseWallet = Keypair.generate();
-      [houseAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), houseWallet.publicKey.toBuffer()],
-        program.programId
+          .rpc(),
+        /UsernameInvalidChars/i
       );
     });
 
-    it("plain create_user_account still rejects a reserved username (turf-monster)", async () => {
-      try {
-        await program.methods
-          .createUserAccount(houseWallet.publicKey, makeUsername("turf-monster"))
+    it("admin username flows waive only reserved prefixes", async () => {
+      const houseWallet = Keypair.generate();
+      await fund(houseWallet.publicKey);
+      const housePda = deriveUser(houseWallet.publicKey);
+
+      await expectRejected(
+        program.methods
+          .createUserAccount(
+            houseWallet.publicKey,
+            username("turf-monster") as any
+          )
           .accountsStrict({
             payer: admin.publicKey,
-            userAccount: houseAccountPda,
+            userAccount: housePda,
             systemProgram: SystemProgram.programId,
           })
-          .rpc();
-        expect.fail("should have rejected reserved prefix on the plain path");
-      } catch (err: any) {
-        expect(err.toString()).to.match(/UsernameReserved/i); // 6020
-      }
-    });
+          .rpc(),
+        /UsernameReserved/i
+      );
 
-    it("rejects admin_create_user_account when the co-signer is not a vault signer", async () => {
-      try {
-        await program.methods
-          .adminCreateUserAccount(houseWallet.publicKey, makeUsername("turf-monster"))
+      await expectRejected(
+        program.methods
+          .adminCreateUserAccount(
+            houseWallet.publicKey,
+            username("turf-monster") as any
+          )
           .accountsStrict({
             payer: admin.publicKey,
-            admin: user2.publicKey, // funded, but NOT in vault_state.signers
+            admin: stranger.publicKey,
             vaultState: vaultStatePda,
-            userAccount: houseAccountPda,
+            userAccount: housePda,
             systemProgram: SystemProgram.programId,
           })
-          .signers([user2])
-          .rpc();
-        expect.fail("should have rejected a non-vault-signer admin");
-      } catch (err: any) {
-        expect(err.toString()).to.match(/Unauthorized/i); // 6000
-      }
-    });
+          .signers([stranger])
+          .rpc(),
+        /Unauthorized/i
+      );
 
-    it("still enforces min-length on the admin create path", async () => {
-      try {
-        await program.methods
-          .adminCreateUserAccount(houseWallet.publicKey, makeUsername("ab"))
+      await expectRejected(
+        program.methods
+          .adminCreateUserAccount(houseWallet.publicKey, username("ab") as any)
           .accountsStrict({
             payer: admin.publicKey,
             admin: admin.publicKey,
             vaultState: vaultStatePda,
-            userAccount: houseAccountPda,
+            userAccount: housePda,
             systemProgram: SystemProgram.programId,
           })
-          .rpc();
-        expect.fail("should have rejected too-short username on the admin path");
-      } catch (err: any) {
-        expect(err.toString()).to.match(/UsernameTooShort/i); // 6022
-      }
-    });
+          .rpc(),
+        /UsernameTooShort/i
+      );
 
-    it("still enforces printable ASCII on the admin create path", async () => {
-      const bytes = new Array(32).fill(0);
-      bytes[0] = 0x74; // t
-      bytes[1] = 0x01; // ← invalid (control char)
-      bytes[2] = 0x66; // f
-      try {
-        await program.methods
-          .adminCreateUserAccount(houseWallet.publicKey, bytes as any)
-          .accountsStrict({
-            payer: admin.publicKey,
-            admin: admin.publicKey,
-            vaultState: vaultStatePda,
-            userAccount: houseAccountPda,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-        expect.fail("should have rejected non-printable bytes on the admin path");
-      } catch (err: any) {
-        expect(err.toString()).to.match(/UsernameInvalidChars/i); // 6021
-      }
-    });
-
-    it("admin_create_user_account accepts a reserved username with a vault-signer co-sign", async () => {
       await program.methods
-        .adminCreateUserAccount(houseWallet.publicKey, makeUsername("turf-monster"))
+        .adminCreateUserAccount(
+          houseWallet.publicKey,
+          username("turf-monster") as any
+        )
         .accountsStrict({
           payer: admin.publicKey,
-          admin: admin.publicKey, // vault signer 1-of-3 (also the payer here)
+          admin: admin.publicKey,
           vaultState: vaultStatePda,
-          userAccount: houseAccountPda,
+          userAccount: housePda,
           systemProgram: SystemProgram.programId,
         })
         .rpc();
 
-      const account = await program.account.userAccount.fetch(houseAccountPda);
-      expect(account.wallet.toBase58()).to.equal(houseWallet.publicKey.toBase58());
-      expect(account.seeds.toNumber()).to.equal(0);
-      expect(decodeUsername(account.username)).to.equal("turf-monster");
-    });
+      let account = await program.account.userAccount.fetch(housePda);
+      expect(decodeFixedBytes(account.username)).to.equal("turf-monster");
 
-    it("plain set_username still rejects a reserved rename (turf)", async () => {
-      try {
-        await program.methods
-          .setUsername(makeUsername("turf"))
+      await expectRejected(
+        program.methods
+          .adminSetUsername(username("turf") as any)
           .accountsStrict({
             wallet: houseWallet.publicKey,
-            userAccount: houseAccountPda,
-          })
-          .signers([houseWallet])
-          .rpc();
-        expect.fail("should have rejected reserved prefix on the plain path");
-      } catch (err: any) {
-        expect(err.toString()).to.match(/UsernameReserved/i); // 6020
-      }
-    });
-
-    it("rejects admin_set_username when the co-signer is not a vault signer", async () => {
-      try {
-        await program.methods
-          .adminSetUsername(makeUsername("turf"))
-          .accountsStrict({
-            wallet: houseWallet.publicKey,
-            admin: user2.publicKey, // NOT in vault_state.signers
+            admin: stranger.publicKey,
             vaultState: vaultStatePda,
-            userAccount: houseAccountPda,
+            userAccount: housePda,
           })
-          .signers([houseWallet, user2])
-          .rpc();
-        expect.fail("should have rejected a non-vault-signer admin");
-      } catch (err: any) {
-        expect(err.toString()).to.match(/Unauthorized/i); // 6000
-      }
-    });
+          .signers([houseWallet, stranger])
+          .rpc(),
+        /Unauthorized/i
+      );
 
-    it("admin_set_username accepts a reserved username with owner + vault-signer co-sign", async () => {
       await program.methods
-        .adminSetUsername(makeUsername("turf"))
+        .adminSetUsername(username("turf") as any)
         .accountsStrict({
           wallet: houseWallet.publicKey,
-          admin: admin.publicKey, // vault signer 1-of-3
+          admin: admin.publicKey,
           vaultState: vaultStatePda,
-          userAccount: houseAccountPda,
+          userAccount: housePda,
         })
         .signers([houseWallet])
         .rpc();
 
-      const account = await program.account.userAccount.fetch(houseAccountPda);
-      expect(decodeUsername(account.username)).to.equal("turf");
-    });
+      account = await program.account.userAccount.fetch(housePda);
+      expect(decodeFixedBytes(account.username)).to.equal("turf");
 
-    it("still enforces min-length on the admin rename path", async () => {
-      try {
-        await program.methods
-          .adminSetUsername(makeUsername("ab"))
+      await expectRejected(
+        program.methods
+          .adminSetUsername(username("turf-x") as any)
           .accountsStrict({
-            wallet: houseWallet.publicKey,
+            wallet: user1.publicKey,
             admin: admin.publicKey,
             vaultState: vaultStatePda,
-            userAccount: houseAccountPda,
-          })
-          .signers([houseWallet])
-          .rpc();
-        expect.fail("should have rejected too-short username on the admin path");
-      } catch (err: any) {
-        expect(err.toString()).to.match(/UsernameTooShort/i); // 6022
-      }
-    });
-
-    it("admin_set_username still requires the account owner's signature", async () => {
-      try {
-        await program.methods
-          .adminSetUsername(makeUsername("turf-x"))
-          .accountsStrict({
-            wallet: user1.publicKey, // wrong owner for houseAccountPda
-            admin: admin.publicKey,
-            vaultState: vaultStatePda,
-            userAccount: houseAccountPda,
+            userAccount: housePda,
           })
           .signers([user1])
-          .rpc();
-        expect.fail("should have rejected a non-owner wallet");
-      } catch (err: any) {
-        expect(err.toString()).to.match(/ConstraintSeeds|Unauthorized|seeds/i);
-      }
+          .rpc(),
+        /ConstraintSeeds|Unauthorized|seeds/i
+      );
     });
   });
 
-  describe("deposit", () => {
-    it("deposits USDC for user1", async () => {
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user1.publicKey.toBuffer()],
-        program.programId
-      );
-
-      const amount = toTokenAmount(10); // $10
-
-      await program.methods
-        .deposit(new anchor.BN(amount))
-        .accountsStrict({
-          user: user1.publicKey,
-          userAccount: userAccountPda,
-          vaultState: vaultStatePda,
-          mint: usdcMint,
-          userTokenAccount: user1UsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .signers([user1])
-        .rpc();
-
-      const account = await program.account.userAccount.fetch(userAccountPda);
-      expect(account.balance.toNumber()).to.equal(amount);
-      expect(account.totalDeposited.toNumber()).to.equal(amount);
-
-      // Verify vault received tokens
-      const vaultBalance = await getAccount(connection, vaultUsdcPda);
-      expect(Number(vaultBalance.amount)).to.equal(amount);
-    });
-
-    it("deposits USDT for user1", async () => {
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user1.publicKey.toBuffer()],
-        program.programId
-      );
-
-      const amount = toTokenAmount(5); // $5
-
-      await program.methods
-        .deposit(new anchor.BN(amount))
-        .accountsStrict({
-          user: user1.publicKey,
-          userAccount: userAccountPda,
-          vaultState: vaultStatePda,
-          mint: usdtMint,
-          userTokenAccount: user1UsdtAccount,
-          vaultTokenAccount: vaultUsdtPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .signers([user1])
-        .rpc();
-
-      const account = await program.account.userAccount.fetch(userAccountPda);
-      expect(account.balance.toNumber()).to.equal(toTokenAmount(15)); // 10 + 5
-    });
-
-    it("deposits USDC for user2", async () => {
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user2.publicKey.toBuffer()],
-        program.programId
-      );
-
-      await program.methods
-        .deposit(new anchor.BN(toTokenAmount(10)))
-        .accountsStrict({
-          user: user2.publicKey,
-          userAccount: userAccountPda,
-          vaultState: vaultStatePda,
-          mint: usdcMint,
-          userTokenAccount: user2UsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .signers([user2])
-        .rpc();
-
-      const account = await program.account.userAccount.fetch(userAccountPda);
-      expect(account.balance.toNumber()).to.equal(toTokenAmount(10));
-    });
-
-    it("rejects deposit with invalid mint", async () => {
-      const fakeMint = await createMint(connection, admin.payer, admin.publicKey, null, DECIMALS);
-      const fakeTokenAccount = await createAccount(connection, admin.payer, fakeMint, user1.publicKey);
-      await mintTo(connection, admin.payer, fakeMint, fakeTokenAccount, admin.publicKey, toTokenAmount(10));
-
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user1.publicKey.toBuffer()],
-        program.programId
-      );
-
-      try {
-        await program.methods
-          .deposit(new anchor.BN(toTokenAmount(1)))
-          .accountsStrict({
-            user: user1.publicKey,
-            userAccount: userAccountPda,
-            vaultState: vaultStatePda,
-            mint: fakeMint,
-            userTokenAccount: fakeTokenAccount,
-            vaultTokenAccount: vaultUsdcPda,
-            tokenProgram: TOKEN_PROGRAM_ID,
-          })
-          .signers([user1])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("InvalidMint");
-      }
-    });
-  });
-
-  describe("create_contest", () => {
-    it("admin creates a contest with prizes transfer", async () => {
-      const [contestPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), contestId],
-        program.programId
-      );
-
-      const entryFee = toTokenAmount(9); // $9
-      const maxEntries = 5;
-      const payoutAmounts = [new anchor.BN(toTokenAmount(40))]; // Small format: 1st gets $40
-      const prizes = toTokenAmount(40); // $40 guarantee
-
-      const vaultBefore = await getAccount(connection, vaultUsdcPda);
-      const adminBefore = await getAccount(connection, adminUsdcAccount);
-
-      await program.methods
-        .createContest(
-          Array.from(contestId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(entryFee),
-          maxEntries,
-          payoutAmounts,
-          new anchor.BN(prizes)
-        )
-        .accountsStrict({
-          payer: admin.publicKey,
-          creator: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: contestPda,
-          mint: usdcMint,
-          creatorTokenAccount: adminUsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const contest = await program.account.contest.fetch(contestPda);
-      expect(contest.entryFee.toNumber()).to.equal(entryFee);
-      expect(contest.maxEntries).to.equal(maxEntries);
-      expect(contest.currentEntries).to.equal(0);
-      expect(contest.entryFees.toNumber()).to.equal(0);
-      expect(contest.prizes.toNumber()).to.equal(prizes);
-      expect(contest.creator.toBase58()).to.equal(admin.publicKey.toBase58());
-      expect(JSON.stringify(contest.status)).to.equal(JSON.stringify({ open: {} }));
-
-      // Verify prizes USDC was transferred
-      const vaultAfter = await getAccount(connection, vaultUsdcPda);
-      const adminAfter = await getAccount(connection, adminUsdcAccount);
-      expect(Number(vaultAfter.amount) - Number(vaultBefore.amount)).to.equal(prizes);
-      expect(Number(adminBefore.amount) - Number(adminAfter.amount)).to.equal(prizes);
-    });
-
-    it("rejects non-signer creating a contest", async () => {
-      const fakeContestId = createHash("sha256").update("fake-contest").digest();
-      const [contestPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), fakeContestId],
-        program.programId
-      );
-
-      try {
-        await program.methods
-          .createContest(
-            Array.from(fakeContestId) as any,
-            DEFAULT_SEASON_ID,
-            new anchor.BN(toTokenAmount(9)),
-            5,
-            [new anchor.BN(toTokenAmount(40))],
-            new anchor.BN(toTokenAmount(40))
-          )
-          .accountsStrict({
-            payer: user1.publicKey,
-            creator: user1.publicKey,
-            vaultState: vaultStatePda,
-            contest: contestPda,
-            mint: usdcMint,
-            creatorTokenAccount: user1UsdcAccount,
-            vaultTokenAccount: vaultUsdcPda,
-            tokenProgram: TOKEN_PROGRAM_ID,
-            systemProgram: SystemProgram.programId,
-          })
-          .signers([user1])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("Unauthorized");
-      }
-    });
-
-    it("rejects create_contest with overflowing payout_amounts (OPSEC-025)", async () => {
-      // payout_amounts = [u64::MAX, 1] sums (wrapping) to 0. With prizes=0 the
-      // old `iter().sum()` would have passed the equality check. checked_add
-      // must catch the overflow instead.
-      const overflowContestId = createHash("sha256").update("opsec-025-overflow").digest();
-      const [overflowContestPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), overflowContestId],
-        program.programId
-      );
-      const U64_MAX = new anchor.BN("18446744073709551615");
-
-      try {
-        await program.methods
-          .createContest(
-            Array.from(overflowContestId) as any,
-            DEFAULT_SEASON_ID,
-            new anchor.BN(toTokenAmount(9)),
-            5,
-            [U64_MAX, new anchor.BN(1)],
-            new anchor.BN(0)
-          )
-          .accountsStrict({
-            payer: admin.publicKey,
-            creator: admin.publicKey,
-            vaultState: vaultStatePda,
-            contest: overflowContestPda,
-            mint: usdcMint,
-            creatorTokenAccount: adminUsdcAccount,
-            vaultTokenAccount: vaultUsdcPda,
-            tokenProgram: TOKEN_PROGRAM_ID,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("Overflow");
-      }
-    });
-  });
-
-  describe("season + seed schedule", () => {
-    it("admin creates season_id=1 with schedule [25, 19, 14, 10, 7]", async () => {
-      defaultSeasonPda = deriveSeasonPda(DEFAULT_SEASON_ID);
-      const name = makeSeasonName("World Cup 2026");
-      const schedule = DEFAULT_SEED_SCHEDULE.map((n) => new anchor.BN(n));
-      const startAt = new anchor.BN(Math.floor(Date.now() / 1000));
-
-      await program.methods
-        .createSeason(DEFAULT_SEASON_ID, name, schedule as any, startAt)
-        .accountsStrict({
-          admin: admin.publicKey,
-          vaultState: vaultStatePda,
-          season: defaultSeasonPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
+  describe("seasons and seed grants", () => {
+    it("creates immutable season seed and quest schedules", async () => {
+      defaultSeasonPda = await createSeason(DEFAULT_SEASON_ID);
       const season = await program.account.season.fetch(defaultSeasonPda);
       expect(season.seasonId).to.equal(DEFAULT_SEASON_ID);
-      expect(Array.from(season.name)).to.deep.equal(name);
-      expect(season.seedSchedule.map((s: anchor.BN) => s.toNumber())).to.deep.equal([
-        25, 19, 14, 10, 7,
-      ]);
-      expect(season.startAt.toNumber()).to.equal(startAt.toNumber());
-      expect(season.createdAt.toNumber()).to.be.greaterThan(0);
-      expect(season.bump).to.be.greaterThan(0);
+      expect(decodeFixedBytes(season.name)).to.equal("World Cup 2026");
+      expect(
+        season.seedSchedule.map((s: anchor.BN) => s.toNumber())
+      ).to.deep.equal(DEFAULT_SEED_SCHEDULE);
+      expect(
+        season.questSeeds.map((s: anchor.BN) => s.toNumber())
+      ).to.deep.equal(QUEST_SEEDS);
     });
 
-    it("rejects duplicate season_id", async () => {
-      const name = makeSeasonName("Duplicate Season");
-      const schedule = DEFAULT_SEED_SCHEDULE.map((n) => new anchor.BN(n));
-      const startAt = new anchor.BN(Math.floor(Date.now() / 1000));
-
-      try {
-        await program.methods
-          .createSeason(DEFAULT_SEASON_ID, name, schedule as any, startAt)
+    it("rejects duplicate and non-signer season creation", async () => {
+      await expectRejected(
+        program.methods
+          .createSeason(
+            DEFAULT_SEASON_ID,
+            bytes("Duplicate", 32) as any,
+            DEFAULT_SEED_SCHEDULE.map((n) => bn(n)) as any,
+            QUEST_SEEDS.map((n) => bn(n)) as any,
+            bn(now())
+          )
           .accountsStrict({
             admin: admin.publicKey,
             vaultState: vaultStatePda,
             season: defaultSeasonPda,
             systemProgram: SystemProgram.programId,
           })
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        const msg = err.toString();
-        const looksLikeAlreadyInit =
-          msg.includes("already in use") ||
-          msg.includes("custom program error: 0x0") ||
-          msg.includes("custom program error: 0") ||
-          msg.includes("AccountAlreadyInitialized");
-        expect(looksLikeAlreadyInit, `Expected an "already in use" error, got: ${msg}`).to.equal(
-          true
-        );
-      }
-    });
+          .rpc(),
+        /already in use|AccountAlreadyInitialized|custom program error: 0x0/i
+      );
 
-    it("rejects non-admin create_season", async () => {
-      const nonAdminSeasonId = 999;
-      const nonAdminPda = deriveSeasonPda(nonAdminSeasonId);
-      const name = makeSeasonName("Unauthorized");
-      const schedule = DEFAULT_SEED_SCHEDULE.map((n) => new anchor.BN(n));
-      const startAt = new anchor.BN(Math.floor(Date.now() / 1000));
-
-      try {
-        await program.methods
-          .createSeason(nonAdminSeasonId, name, schedule as any, startAt)
+      const seasonPda = deriveSeason(999);
+      await expectRejected(
+        program.methods
+          .createSeason(
+            999,
+            bytes("Unauthorized", 32) as any,
+            DEFAULT_SEED_SCHEDULE.map((n) => bn(n)) as any,
+            QUEST_SEEDS.map((n) => bn(n)) as any,
+            bn(now())
+          )
           .accountsStrict({
-            admin: user1.publicKey,
+            admin: stranger.publicKey,
             vaultState: vaultStatePda,
-            season: nonAdminPda,
+            season: seasonPda,
             systemProgram: SystemProgram.programId,
           })
-          .signers([user1])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("Unauthorized");
-      }
+          .signers([stranger])
+          .rpc(),
+        /Unauthorized/i
+      );
     });
 
-    it("entry index 0 awards schedule[0] = 25 seeds", async () => {
-      // Fresh user for clean before/after seed deltas
-      const seedTestUser = Keypair.generate();
-      const fundTx = new anchor.web3.Transaction().add(
-        anchor.web3.SystemProgram.transfer({
-          fromPubkey: admin.publicKey,
-          toPubkey: seedTestUser.publicKey,
-          lamports: LAMPORTS_PER_SOL,
-        })
-      );
-      await provider.sendAndConfirm(fundTx);
-
-      const [userPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), seedTestUser.publicKey.toBuffer()],
-        program.programId
-      );
-
-      // Create user account
-      await program.methods
-        .createUserAccount(seedTestUser.publicKey, makeUsername("seed-tester"))
-        .accountsStrict({
-          payer: admin.publicKey,
-          userAccount: userPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      // Fund balance so the entry fee can be debited
-      const userUsdc = await createAccount(connection, admin.payer, usdcMint, seedTestUser.publicKey);
-      await mintTo(connection, admin.payer, usdcMint, userUsdc, admin.publicKey, toTokenAmount(50));
-      await program.methods
-        .deposit(new anchor.BN(toTokenAmount(20)))
-        .accountsStrict({
-          user: seedTestUser.publicKey,
-          userAccount: userPda,
-          vaultState: vaultStatePda,
-          mint: usdcMint,
-          userTokenAccount: userUsdc,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .signers([seedTestUser])
-        .rpc();
-
-      // Fresh contest for this test
-      const cId = createHash("sha256").update("seed-idx-0-test").digest();
-      const [cPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), cId],
-        program.programId
-      );
-      await program.methods
-        .createContest(
-          Array.from(cId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(toTokenAmount(9)),
-          5,
-          [],
-          new anchor.BN(0)
-        )
-        .accountsStrict({
-          payer: admin.publicKey,
-          creator: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: cPda,
-          mint: usdcMint,
-          creatorTokenAccount: adminUsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      // Enter at entry_num=0 → should award schedule[0]=25
+    it("grants bounded idempotent quest seeds", async () => {
+      const userPda = deriveUser(user1.publicKey);
       const before = await program.account.userAccount.fetch(userPda);
-
-      const entryNumBytes = Buffer.alloc(4);
-      entryNumBytes.writeUInt32LE(0);
-      const [ePda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("entry"), cId, seedTestUser.publicKey.toBuffer(), entryNumBytes],
-        program.programId
-      );
+      const grantPda = deriveSeedGrant(user1.publicKey, 0, DEFAULT_PUBKEY);
 
       await program.methods
-        .enterContest(0)
-        .accountsStrict({
-          payer: admin.publicKey,
-          wallet: seedTestUser.publicKey,
-          vaultState: vaultStatePda,
-          userAccount: userPda,
-          contest: cPda,
-          contestEntry: ePda,
-          season: defaultSeasonPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const after = await program.account.userAccount.fetch(userPda);
-      expect(after.seeds.toNumber() - before.seeds.toNumber()).to.equal(25);
-    });
-
-    it("entries 0, 1, 2 award 25 + 19 + 14 = 58 seeds", async () => {
-      // Fresh user to isolate the delta
-      const cumUser = Keypair.generate();
-      const fundTx = new anchor.web3.Transaction().add(
-        anchor.web3.SystemProgram.transfer({
-          fromPubkey: admin.publicKey,
-          toPubkey: cumUser.publicKey,
-          lamports: LAMPORTS_PER_SOL,
-        })
-      );
-      await provider.sendAndConfirm(fundTx);
-
-      const [userPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), cumUser.publicKey.toBuffer()],
-        program.programId
-      );
-
-      await program.methods
-        .createUserAccount(cumUser.publicKey, makeUsername("cumulative"))
-        .accountsStrict({
-          payer: admin.publicKey,
-          userAccount: userPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const userUsdc = await createAccount(connection, admin.payer, usdcMint, cumUser.publicKey);
-      await mintTo(connection, admin.payer, usdcMint, userUsdc, admin.publicKey, toTokenAmount(100));
-      await program.methods
-        .deposit(new anchor.BN(toTokenAmount(50)))
-        .accountsStrict({
-          user: cumUser.publicKey,
-          userAccount: userPda,
-          vaultState: vaultStatePda,
-          mint: usdcMint,
-          userTokenAccount: userUsdc,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .signers([cumUser])
-        .rpc();
-
-      // Fresh contest with max_entries=3 so we can enter at indices 0, 1, 2
-      const cId = createHash("sha256").update("seed-cumulative-test").digest();
-      const [cPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), cId],
-        program.programId
-      );
-      await program.methods
-        .createContest(
-          Array.from(cId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(toTokenAmount(9)),
-          3,
-          [],
-          new anchor.BN(0)
-        )
-        .accountsStrict({
-          payer: admin.publicKey,
-          creator: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: cPda,
-          mint: usdcMint,
-          creatorTokenAccount: adminUsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const before = await program.account.userAccount.fetch(userPda);
-
-      for (const entryNum of [0, 1, 2]) {
-        const eBytes = Buffer.alloc(4);
-        eBytes.writeUInt32LE(entryNum);
-        const [ePda] = PublicKey.findProgramAddressSync(
-          [Buffer.from("entry"), cId, cumUser.publicKey.toBuffer(), eBytes],
-          program.programId
-        );
-
-        await program.methods
-          .enterContest(entryNum)
-          .accountsStrict({
-            payer: admin.publicKey,
-            wallet: cumUser.publicKey,
-            vaultState: vaultStatePda,
-            userAccount: userPda,
-            contest: cPda,
-            contestEntry: ePda,
-            season: defaultSeasonPda,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-      }
-
-      const after = await program.account.userAccount.fetch(userPda);
-      // schedule[0] + schedule[1] + schedule[2] = 25 + 19 + 14 = 58
-      expect(after.seeds.toNumber() - before.seeds.toNumber()).to.equal(58);
-    });
-
-    it("entry index 7 clamps to schedule[4] = 7 seeds", async () => {
-      // Create a season with max_entries large enough to accept entry_num=7.
-      // We'll use a fresh contest with max_entries=10 and just enter once with
-      // entry_num=7 (no need to enter 0..6 first — entry PDA seeds include
-      // entry_num, so each entry_num is independent).
-      const clampUser = Keypair.generate();
-      const fundTx = new anchor.web3.Transaction().add(
-        anchor.web3.SystemProgram.transfer({
-          fromPubkey: admin.publicKey,
-          toPubkey: clampUser.publicKey,
-          lamports: LAMPORTS_PER_SOL,
-        })
-      );
-      await provider.sendAndConfirm(fundTx);
-
-      const [userPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), clampUser.publicKey.toBuffer()],
-        program.programId
-      );
-
-      await program.methods
-        .createUserAccount(clampUser.publicKey, makeUsername("clamp-tester"))
-        .accountsStrict({
-          payer: admin.publicKey,
-          userAccount: userPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const userUsdc = await createAccount(connection, admin.payer, usdcMint, clampUser.publicKey);
-      await mintTo(connection, admin.payer, usdcMint, userUsdc, admin.publicKey, toTokenAmount(50));
-      await program.methods
-        .deposit(new anchor.BN(toTokenAmount(20)))
-        .accountsStrict({
-          user: clampUser.publicKey,
-          userAccount: userPda,
-          vaultState: vaultStatePda,
-          mint: usdcMint,
-          userTokenAccount: userUsdc,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .signers([clampUser])
-        .rpc();
-
-      const cId = createHash("sha256").update("seed-clamp-test").digest();
-      const [cPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), cId],
-        program.programId
-      );
-      await program.methods
-        .createContest(
-          Array.from(cId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(toTokenAmount(9)),
-          10,
-          [],
-          new anchor.BN(0)
-        )
-        .accountsStrict({
-          payer: admin.publicKey,
-          creator: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: cPda,
-          mint: usdcMint,
-          creatorTokenAccount: adminUsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const before = await program.account.userAccount.fetch(userPda);
-
-      const eBytes = Buffer.alloc(4);
-      eBytes.writeUInt32LE(7);
-      const [ePda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("entry"), cId, clampUser.publicKey.toBuffer(), eBytes],
-        program.programId
-      );
-
-      await program.methods
-        .enterContest(7)
-        .accountsStrict({
-          payer: admin.publicKey,
-          wallet: clampUser.publicKey,
-          vaultState: vaultStatePda,
-          userAccount: userPda,
-          contest: cPda,
-          contestEntry: ePda,
-          season: defaultSeasonPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const after = await program.account.userAccount.fetch(userPda);
-      // entry_num=7 clamps to slot 4 → schedule[4]=7
-      expect(after.seeds.toNumber() - before.seeds.toNumber()).to.equal(7);
-    });
-
-    it("rejects enter_contest with a season account that isn't the contest's season (OPSEC-023)", async () => {
-      // The contest is bound to DEFAULT_SEASON_ID. Passing a different
-      // season's PDA as the `season` account must fail the seeds constraint.
-
-      // Ensure a second, distinct season exists (season_id=2).
-      const OTHER_SEASON_ID = 2;
-      const otherSeasonPda = deriveSeasonPda(OTHER_SEASON_ID);
-      const otherSeasonName = makeSeasonName("Decoy Season 2");
-      const otherSchedule = DEFAULT_SEED_SCHEDULE.map((n) => new anchor.BN(n));
-      const otherStartAt = new anchor.BN(Math.floor(Date.now() / 1000));
-
-      await program.methods
-        .createSeason(OTHER_SEASON_ID, otherSeasonName, otherSchedule as any, otherStartAt)
-        .accountsStrict({
-          admin: admin.publicKey,
-          vaultState: vaultStatePda,
-          season: otherSeasonPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      // Set up a user with a funded balance so the entry fee can be debited.
-      const wrongSeasonUser = Keypair.generate();
-      const fundTx = new anchor.web3.Transaction().add(
-        anchor.web3.SystemProgram.transfer({
-          fromPubkey: admin.publicKey,
-          toPubkey: wrongSeasonUser.publicKey,
-          lamports: LAMPORTS_PER_SOL,
-        })
-      );
-      await provider.sendAndConfirm(fundTx);
-
-      const [userPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), wrongSeasonUser.publicKey.toBuffer()],
-        program.programId
-      );
-
-      await program.methods
-        .createUserAccount(wrongSeasonUser.publicKey, makeUsername("wrong-season"))
-        .accountsStrict({
-          payer: admin.publicKey,
-          userAccount: userPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const userUsdc = await createAccount(connection, admin.payer, usdcMint, wrongSeasonUser.publicKey);
-      await mintTo(connection, admin.payer, usdcMint, userUsdc, admin.publicKey, toTokenAmount(50));
-      await program.methods
-        .deposit(new anchor.BN(toTokenAmount(20)))
-        .accountsStrict({
-          user: wrongSeasonUser.publicKey,
-          userAccount: userPda,
-          vaultState: vaultStatePda,
-          mint: usdcMint,
-          userTokenAccount: userUsdc,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .signers([wrongSeasonUser])
-        .rpc();
-
-      // Fresh contest bound to DEFAULT_SEASON_ID.
-      const cId = createHash("sha256").update("opsec-023-wrong-season").digest();
-      const [cPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), cId],
-        program.programId
-      );
-      await program.methods
-        .createContest(
-          Array.from(cId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(toTokenAmount(9)),
-          5,
-          [],
-          new anchor.BN(0)
-        )
-        .accountsStrict({
-          payer: admin.publicKey,
-          creator: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: cPda,
-          mint: usdcMint,
-          creatorTokenAccount: adminUsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const entryNumBytes = Buffer.alloc(4);
-      entryNumBytes.writeUInt32LE(0);
-      const [ePda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("entry"), cId, wrongSeasonUser.publicKey.toBuffer(), entryNumBytes],
-        program.programId
-      );
-
-      // Attempt the entry while passing the SECOND season's PDA instead of
-      // the contest's real season — must be rejected by the seeds constraint.
-      try {
-        await program.methods
-          .enterContest(0)
-          .accountsStrict({
-            payer: admin.publicKey,
-            wallet: wrongSeasonUser.publicKey,
-            vaultState: vaultStatePda,
-            userAccount: userPda,
-            contest: cPda,
-            contestEntry: ePda,
-            season: otherSeasonPda,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("ConstraintSeeds");
-      }
-    });
-  });
-
-  describe("enter_contest", () => {
-    it("user1 enters the contest", async () => {
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user1.publicKey.toBuffer()],
-        program.programId
-      );
-      const [contestPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), contestId],
-        program.programId
-      );
-      const entryNum = 1;
-      const entryNumBytes = Buffer.alloc(4);
-      entryNumBytes.writeUInt32LE(entryNum);
-      const [entryPda] = PublicKey.findProgramAddressSync(
-        [
-          Buffer.from("entry"),
-          contestId,
-          user1.publicKey.toBuffer(),
-          entryNumBytes,
-        ],
-        program.programId
-      );
-
-      const userBefore = await program.account.userAccount.fetch(userAccountPda);
-
-      await program.methods
-        .enterContest(entryNum)
-        .accountsStrict({
-          payer: admin.publicKey,
-          wallet: user1.publicKey,
-          vaultState: vaultStatePda,
-          userAccount: userAccountPda,
-          contest: contestPda,
-          contestEntry: entryPda,
-          season: defaultSeasonPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const userAfter = await program.account.userAccount.fetch(userAccountPda);
-      const contest = await program.account.contest.fetch(contestPda);
-      const entry = await program.account.contestEntry.fetch(entryPda);
-
-      // User balance decreased by entry fee
-      expect(userAfter.balance.toNumber()).to.equal(
-        userBefore.balance.toNumber() - toTokenAmount(9)
-      );
-      // entry_num=1 → seed_schedule[1] = 19 seeds awarded
-      expect(userAfter.seeds.toNumber() - userBefore.seeds.toNumber()).to.equal(19);
-      // Contest pool increased
-      expect(contest.currentEntries).to.equal(1);
-      expect(contest.entryFees.toNumber()).to.equal(toTokenAmount(9));
-      // Entry created
-      expect(entry.wallet.toBase58()).to.equal(user1.publicKey.toBase58());
-      expect(entry.entryNum).to.equal(entryNum);
-      expect(JSON.stringify(entry.status)).to.equal(JSON.stringify({ active: {} }));
-    });
-
-    it("user2 enters the contest", async () => {
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user2.publicKey.toBuffer()],
-        program.programId
-      );
-      const [contestPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), contestId],
-        program.programId
-      );
-      const entryNum = 1;
-      const entryNumBytes = Buffer.alloc(4);
-      entryNumBytes.writeUInt32LE(entryNum);
-      const [entryPda] = PublicKey.findProgramAddressSync(
-        [
-          Buffer.from("entry"),
-          contestId,
-          user2.publicKey.toBuffer(),
-          entryNumBytes,
-        ],
-        program.programId
-      );
-
-      const user2Before = await program.account.userAccount.fetch(userAccountPda);
-
-      await program.methods
-        .enterContest(entryNum)
-        .accountsStrict({
-          payer: admin.publicKey,
-          wallet: user2.publicKey,
-          vaultState: vaultStatePda,
-          userAccount: userAccountPda,
-          contest: contestPda,
-          contestEntry: entryPda,
-          season: defaultSeasonPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const contest = await program.account.contest.fetch(contestPda);
-      expect(contest.currentEntries).to.equal(2);
-      expect(contest.entryFees.toNumber()).to.equal(toTokenAmount(18));
-
-      // entry_num=1 → seed_schedule[1] = 19 seeds awarded
-      const user2After = await program.account.userAccount.fetch(userAccountPda);
-      expect(user2After.seeds.toNumber() - user2Before.seeds.toNumber()).to.equal(19);
-    });
-
-    it("rejects entry with insufficient balance", async () => {
-      // Create a broke user (transfer SOL instead of airdrop — v3.1 airdrop is broken)
-      const brokeUser = Keypair.generate();
-      const fundTx = new anchor.web3.Transaction().add(
-        anchor.web3.SystemProgram.transfer({
-          fromPubkey: admin.publicKey,
-          toPubkey: brokeUser.publicKey,
-          lamports: LAMPORTS_PER_SOL,
-        })
-      );
-      await provider.sendAndConfirm(fundTx);
-
-      const [brokeUserPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), brokeUser.publicKey.toBuffer()],
-        program.programId
-      );
-      const [contestPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), contestId],
-        program.programId
-      );
-
-      // Create user account with 0 balance
-      await program.methods
-        .createUserAccount(brokeUser.publicKey, makeUsername("broke-user"))
-        .accountsStrict({
-          payer: admin.publicKey,
-          userAccount: brokeUserPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const entryNumBytes = Buffer.alloc(4);
-      entryNumBytes.writeUInt32LE(1);
-      const [entryPda] = PublicKey.findProgramAddressSync(
-        [
-          Buffer.from("entry"),
-          contestId,
-          brokeUser.publicKey.toBuffer(),
-          entryNumBytes,
-        ],
-        program.programId
-      );
-
-      try {
-        await program.methods
-          .enterContest(1)
-          .accountsStrict({
-            payer: admin.publicKey,
-            wallet: brokeUser.publicKey,
-            vaultState: vaultStatePda,
-            userAccount: brokeUserPda,
-            contest: contestPda,
-            contestEntry: entryPda,
-            season: defaultSeasonPda,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("InsufficientBalance");
-      }
-    });
-  });
-
-  describe("settle_contest", () => {
-    it("settles with valid cosigner (2-of-3 multisig)", async () => {
-      const [contestPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), contestId],
-        program.programId
-      );
-      const [user1AccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user1.publicKey.toBuffer()],
-        program.programId
-      );
-      const [user2AccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user2.publicKey.toBuffer()],
-        program.programId
-      );
-      const entryNumBytes = Buffer.alloc(4);
-      entryNumBytes.writeUInt32LE(1);
-      const [user1EntryPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("entry"), contestId, user1.publicKey.toBuffer(), entryNumBytes],
-        program.programId
-      );
-      const [user2EntryPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("entry"), contestId, user2.publicKey.toBuffer(), entryNumBytes],
-        program.programId
-      );
-
-      const user1Before = await program.account.userAccount.fetch(user1AccountPda);
-      const user2Before = await program.account.userAccount.fetch(user2AccountPda);
-
-      // Contest entry_fees = $18 (2×$9), prizes = $40, total = $58
-      // user1 rank 1 gets $40 (Small format payout), user2 rank 2 gets $0
-      const settlements = [
-        { wallet: user1.publicKey, entryNum: 1, rank: 1, payout: new anchor.BN(toTokenAmount(40)) },
-        { wallet: user2.publicKey, entryNum: 1, rank: 2, payout: new anchor.BN(toTokenAmount(0)) },
-      ];
-
-      await program.methods
-        .settleContest(settlements)
-        .accountsStrict({
-          admin: admin.publicKey,
-          cosigner: signer2.publicKey,
-          vaultState: vaultStatePda,
-          contest: contestPda,
-        })
-        .signers([signer2])
-        .remainingAccounts([
-          { pubkey: user1AccountPda, isSigner: false, isWritable: true },
-          { pubkey: user1EntryPda, isSigner: false, isWritable: true },
-          { pubkey: user2AccountPda, isSigner: false, isWritable: true },
-          { pubkey: user2EntryPda, isSigner: false, isWritable: true },
-        ])
-        .rpc();
-
-      const user1After = await program.account.userAccount.fetch(user1AccountPda);
-      const user2After = await program.account.userAccount.fetch(user2AccountPda);
-      const contest = await program.account.contest.fetch(contestPda);
-
-      expect(user1After.balance.toNumber()).to.equal(
-        user1Before.balance.toNumber() + toTokenAmount(40)
-      );
-      expect(user1After.totalWon.toNumber()).to.equal(toTokenAmount(40));
-      expect(user2After.balance.toNumber()).to.equal(
-        user2Before.balance.toNumber()
-      );
-      expect(JSON.stringify(contest.status)).to.equal(JSON.stringify({ settled: {} }));
-
-      // Verify entry statuses
-      const user1Entry = await program.account.contestEntry.fetch(user1EntryPda);
-      const user2Entry = await program.account.contestEntry.fetch(user2EntryPda);
-      expect(JSON.stringify(user1Entry.status)).to.equal(JSON.stringify({ won: {} }));
-      expect(user1Entry.rank).to.equal(1);
-      expect(user1Entry.payout.toNumber()).to.equal(toTokenAmount(40));
-      expect(JSON.stringify(user2Entry.status)).to.equal(JSON.stringify({ lost: {} }));
-      expect(user2Entry.rank).to.equal(2);
-    });
-
-    it("rejects settlement with same signer twice", async () => {
-      // Create a new contest to test with
-      const dupeContestId = createHash("sha256").update("dupe-signer-test").digest();
-      const [dupeContestPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), dupeContestId],
-        program.programId
-      );
-
-      await program.methods
-        .createContest(
-          Array.from(dupeContestId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(toTokenAmount(9)),
-          5,
-          [],
-          new anchor.BN(0)
-        )
-        .accountsStrict({
-          payer: admin.publicKey,
-          creator: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: dupeContestPda,
-          mint: usdcMint,
-          creatorTokenAccount: adminUsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      try {
-        await program.methods
-          .settleContest([])
-          .accountsStrict({
-            admin: admin.publicKey,
-            cosigner: admin.publicKey,
-            vaultState: vaultStatePda,
-            contest: dupeContestPda,
-          })
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("Unauthorized");
-      }
-    });
-
-    it("rejects settlement with non-signer cosigner", async () => {
-      // Create a new contest to test with
-      const nonSignerContestId = createHash("sha256").update("non-signer-test").digest();
-      const [nonSignerContestPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), nonSignerContestId],
-        program.programId
-      );
-
-      await program.methods
-        .createContest(
-          Array.from(nonSignerContestId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(toTokenAmount(9)),
-          5,
-          [],
-          new anchor.BN(0)
-        )
-        .accountsStrict({
-          payer: admin.publicKey,
-          creator: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: nonSignerContestPda,
-          mint: usdcMint,
-          creatorTokenAccount: adminUsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      try {
-        await program.methods
-          .settleContest([])
-          .accountsStrict({
-            admin: admin.publicKey,
-            cosigner: user1.publicKey,
-            vaultState: vaultStatePda,
-            contest: nonSignerContestPda,
-          })
-          .signers([user1])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("Unauthorized");
-      }
-    });
-
-    it("rejects settling an already settled contest", async () => {
-      const [contestPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), contestId],
-        program.programId
-      );
-
-      try {
-        await program.methods
-          .settleContest([])
-          .accountsStrict({
-            admin: admin.publicKey,
-            cosigner: signer2.publicKey,
-            vaultState: vaultStatePda,
-            contest: contestPda,
-          })
-          .signers([signer2])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("ContestAlreadySettled");
-      }
-    });
-
-    it("rejects settlement with duplicate (wallet, entry_num) pair (v0.11.1)", async () => {
-      // OPSEC-003: the same entry must not appear twice in a single settle
-      // call — would otherwise credit the user's balance twice in one tx.
-      const dupeEntryContestId = createHash("sha256").update("dupe-entry-test").digest();
-      const [dupeEntryContestPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), dupeEntryContestId],
-        program.programId
-      );
-
-      await program.methods
-        .createContest(
-          Array.from(dupeEntryContestId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(toTokenAmount(9)),
-          5,
-          [],
-          new anchor.BN(0)
-        )
-        .accountsStrict({
-          payer: admin.publicKey,
-          creator: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: dupeEntryContestPda,
-          mint: usdcMint,
-          creatorTokenAccount: adminUsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      // Duplicate (wallet=user1, entry_num=1). Payouts are zero so the
-      // total_payouts cap check passes trivially and the dedup check is
-      // what should fire. Remaining accounts intentionally empty — the
-      // dedup runs before the remaining-accounts length check.
-      const settlements = [
-        { wallet: user1.publicKey, entryNum: 1, rank: 1, payout: new anchor.BN(0) },
-        { wallet: user1.publicKey, entryNum: 1, rank: 2, payout: new anchor.BN(0) },
-      ];
-
-      try {
-        await program.methods
-          .settleContest(settlements)
-          .accountsStrict({
-            admin: admin.publicKey,
-            cosigner: signer2.publicKey,
-            vaultState: vaultStatePda,
-            contest: dupeEntryContestPda,
-          })
-          .signers([signer2])
-          .rpc();
-        expect.fail("Should have thrown DuplicateEntry");
-      } catch (err) {
-        expect(err.toString()).to.contain("DuplicateEntry");
-      }
-    });
-  });
-
-  describe("withdraw", () => {
-    it("user1 withdraws USDC", async () => {
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user1.publicKey.toBuffer()],
-        program.programId
-      );
-
-      const userBefore = await program.account.userAccount.fetch(userAccountPda);
-      const tokenBefore = await getAccount(connection, user1UsdcAccount);
-      const withdrawAmount = toTokenAmount(2);
-
-      await program.methods
-        .withdraw(new anchor.BN(withdrawAmount))
-        .accountsStrict({
-          user: user1.publicKey,
-          userAccount: userAccountPda,
-          vaultState: vaultStatePda,
-          mint: usdcMint,
-          userTokenAccount: user1UsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .signers([user1])
-        .rpc();
-
-      const userAfter = await program.account.userAccount.fetch(userAccountPda);
-      const tokenAfter = await getAccount(connection, user1UsdcAccount);
-
-      expect(userAfter.balance.toNumber()).to.equal(
-        userBefore.balance.toNumber() - withdrawAmount
-      );
-      expect(userAfter.totalWithdrawn.toNumber()).to.equal(withdrawAmount);
-      expect(Number(tokenAfter.amount) - Number(tokenBefore.amount)).to.equal(withdrawAmount);
-    });
-
-    it("rejects withdrawal exceeding balance", async () => {
-      const [userAccountPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), user1.publicKey.toBuffer()],
-        program.programId
-      );
-
-      try {
-        await program.methods
-          .withdraw(new anchor.BN(toTokenAmount(999999)))
-          .accountsStrict({
-            user: user1.publicKey,
-            userAccount: userAccountPda,
-            vaultState: vaultStatePda,
-            mint: usdcMint,
-            userTokenAccount: user1UsdcAccount,
-            vaultTokenAccount: vaultUsdcPda,
-            tokenProgram: TOKEN_PROGRAM_ID,
-          })
-          .signers([user1])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("InsufficientBalance");
-      }
-    });
-  });
-
-  describe("close_contest", () => {
-    it("admin closes settled contest", async () => {
-      const [contestPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), contestId],
-        program.programId
-      );
-
-      const adminBefore = await connection.getBalance(admin.publicKey);
-
-      await program.methods
-        .closeContest()
-        .accountsStrict({
-          admin: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: contestPda,
-        })
-        .rpc();
-
-      const adminAfter = await connection.getBalance(admin.publicKey);
-
-      // Admin should have received rent back (minus tx fee)
-      expect(adminAfter).to.be.greaterThan(adminBefore - 10000);
-
-      // Contest account should no longer exist
-      const account = await connection.getAccountInfo(contestPda);
-      expect(account).to.be.null;
-    });
-
-    it("rejects closing unsettled contest", async () => {
-      // Create a new open contest
-      const freshContestId = createHash("sha256").update("close-test").digest();
-      const [freshContestPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), freshContestId],
-        program.programId
-      );
-
-      await program.methods
-        .createContest(
-          Array.from(freshContestId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(toTokenAmount(9)),
-          5,
-          [],
-          new anchor.BN(0)
-        )
-        .accountsStrict({
-          payer: admin.publicKey,
-          creator: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: freshContestPda,
-          mint: usdcMint,
-          creatorTokenAccount: adminUsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      try {
-        await program.methods
-          .closeContest()
-          .accountsStrict({
-            admin: admin.publicKey,
-            vaultState: vaultStatePda,
-            contest: freshContestPda,
-          })
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("ContestNotSettled");
-      }
-    });
-  });
-
-  // v0.15.1 (prelaunch audit C1): migrate_user_account instruction removed.
-  // Previously this describe block tested its idempotent no-op behavior.
-
-  describe("multisig", () => {
-    it("any signer can create a contest (single-signer routine op)", async () => {
-      const signer2ContestId = createHash("sha256").update("signer2-test").digest();
-      const [signer2ContestPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), signer2ContestId],
-        program.programId
-      );
-
-      await program.methods
-        .createContest(
-          Array.from(signer2ContestId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(toTokenAmount(9)),
-          5,
-          [],
-          new anchor.BN(0)
-        )
-        .accountsStrict({
-          payer: signer2.publicKey,
-          creator: signer2.publicKey,
-          vaultState: vaultStatePda,
-          contest: signer2ContestPda,
-          mint: usdcMint,
-          creatorTokenAccount: signer2UsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .signers([signer2])
-        .rpc();
-
-      const contest = await program.account.contest.fetch(signer2ContestPda);
-      expect(contest.entryFee.toNumber()).to.equal(toTokenAmount(9));
-      expect(contest.admin.toBase58()).to.equal(signer2.publicKey.toBase58());
-    });
-
-    it("update_signers with valid 2-of-3 cosign", async () => {
-      // Create a 4th keypair to swap in
-      const newSigner = Keypair.generate();
-      const fundTx = new anchor.web3.Transaction().add(
-        anchor.web3.SystemProgram.transfer({
-          fromPubkey: admin.publicKey,
-          toPubkey: newSigner.publicKey,
-          lamports: LAMPORTS_PER_SOL,
-        })
-      );
-      await provider.sendAndConfirm(fundTx);
-
-      // Update signers: replace signer3 with newSigner
-      const newSigners = [admin.publicKey, signer2.publicKey, newSigner.publicKey];
-
-      await program.methods
-        .updateSigners(newSigners, 2)
-        .accountsStrict({
-          admin: admin.publicKey,
-          cosigner: signer2.publicKey,
-          vaultState: vaultStatePda,
-        })
-        .signers([signer2])
-        .rpc();
-
-      const vault = await program.account.vaultState.fetch(vaultStatePda);
-      expect(vault.signers[0].toBase58()).to.equal(admin.publicKey.toBase58());
-      expect(vault.signers[1].toBase58()).to.equal(signer2.publicKey.toBase58());
-      expect(vault.signers[2].toBase58()).to.equal(newSigner.publicKey.toBase58());
-      expect(vault.threshold).to.equal(2);
-
-      // Restore original signers for remaining tests
-      await program.methods
-        .updateSigners([admin.publicKey, signer2.publicKey, signer3.publicKey], 2)
-        .accountsStrict({
-          admin: admin.publicKey,
-          cosigner: signer2.publicKey,
-          vaultState: vaultStatePda,
-        })
-        .signers([signer2])
-        .rpc();
-    });
-
-    it("rejects update_signers with invalid threshold", async () => {
-      try {
-        await program.methods
-          .updateSigners([admin.publicKey, signer2.publicKey, signer3.publicKey], 4)
-          .accountsStrict({
-            admin: admin.publicKey,
-            cosigner: signer2.publicKey,
-            vaultState: vaultStatePda,
-          })
-          .signers([signer2])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("InvalidThreshold");
-      }
-    });
-
-    it("rejects update_signers with duplicate signers", async () => {
-      try {
-        await program.methods
-          .updateSigners([admin.publicKey, admin.publicKey, signer3.publicKey], 2)
-          .accountsStrict({
-            admin: admin.publicKey,
-            cosigner: signer2.publicKey,
-            vaultState: vaultStatePda,
-          })
-          .signers([signer2])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("DuplicateSigner");
-      }
-    });
-
-    it("rejects update_signers that drops all current cosigners (OPSEC-027)", async () => {
-      // Rotate to 3 fresh keypairs — none of which is the admin or cosigner
-      // who authorized this update. Continuity check must reject it.
-      const fresh1 = Keypair.generate();
-      const fresh2 = Keypair.generate();
-      const fresh3 = Keypair.generate();
-      try {
-        await program.methods
-          .updateSigners([fresh1.publicKey, fresh2.publicKey, fresh3.publicKey], 2)
-          .accountsStrict({
-            admin: admin.publicKey,
-            cosigner: signer2.publicKey,
-            vaultState: vaultStatePda,
-          })
-          .signers([signer2])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("SignerContinuityRequired");
-      }
-
-      // Sanity: vault signers unchanged after the rejected update
-      const vault = await program.account.vaultState.fetch(vaultStatePda);
-      expect(vault.signers[0].toBase58()).to.equal(admin.publicKey.toBase58());
-    });
-  });
-
-  describe("mint_entry_token", () => {
-    // Helper: derive the EntryTokenAccount PDA for a given wallet + sequence
-    const deriveEntryTokenPda = (wallet: PublicKey, sequence: number | bigint): PublicKey => {
-      const seqBuf = Buffer.alloc(8);
-      seqBuf.writeBigUInt64LE(BigInt(sequence));
-      const [pda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("entry_token"), wallet.toBuffer(), seqBuf],
-        program.programId
-      );
-      return pda;
-    };
-
-    // Helper: build a 64-byte source_ref array (left-aligned, zero-padded)
-    const makeSourceRef = (s: string): number[] => {
-      const buf = Buffer.alloc(64);
-      buf.write(s, 0, "utf8");
-      return Array.from(buf);
-    };
-
-    it("admin mints an entry token for user1 (sequence 0)", async () => {
-      const sequence = new anchor.BN(0);
-      const entryTokenPda = deriveEntryTokenPda(user1.publicKey, 0);
-      const sourceRef = makeSourceRef("operator-mint-test-0");
-      const STRIPE = 1;
-
-      await program.methods
-        .mintEntryToken(sequence, STRIPE, sourceRef)
+        .grantSeeds(bn(12), 0, DEFAULT_PUBKEY)
         .accountsStrict({
           admin: admin.publicKey,
           vaultState: vaultStatePda,
           userWallet: user1.publicKey,
-          entryToken: entryTokenPda,
+          userAccount: userPda,
+          seedGrant: grantPda,
           systemProgram: SystemProgram.programId,
         })
         .rpc();
 
-      const token = await program.account.entryTokenAccount.fetch(entryTokenPda);
-      expect(token.owner.toBase58()).to.equal(user1.publicKey.toBase58());
-      expect(token.source).to.equal(STRIPE);
-      expect(Array.from(token.sourceRef)).to.deep.equal(sourceRef);
-      expect(token.consumed).to.equal(false);
-      expect(token.consumedAt).to.equal(null);
-      expect(token.createdAt.toNumber()).to.be.greaterThan(0);
-      expect(token.bump).to.be.greaterThan(0);
-    });
+      const after = await program.account.userAccount.fetch(userPda);
+      expect(after.seeds.toNumber() - before.seeds.toNumber()).to.equal(12);
 
-    it("admin mints a second entry token for user1 (sequence 1)", async () => {
-      const sequence = new anchor.BN(1);
-      const entryTokenPda = deriveEntryTokenPda(user1.publicKey, 1);
-      const sourceRef = makeSourceRef("operator-mint-test-1");
-      const OPERATOR = 0;
-
-      await program.methods
-        .mintEntryToken(sequence, OPERATOR, sourceRef)
-        .accountsStrict({
-          admin: admin.publicKey,
-          vaultState: vaultStatePda,
-          userWallet: user1.publicKey,
-          entryToken: entryTokenPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const token = await program.account.entryTokenAccount.fetch(entryTokenPda);
-      expect(token.owner.toBase58()).to.equal(user1.publicKey.toBase58());
-      expect(token.source).to.equal(OPERATOR);
-      expect(token.consumed).to.equal(false);
-
-      // Confirm sequence 0 still exists and is distinct
-      const firstPda = deriveEntryTokenPda(user1.publicKey, 0);
-      const firstToken = await program.account.entryTokenAccount.fetch(firstPda);
-      expect(firstToken.owner.toBase58()).to.equal(user1.publicKey.toBase58());
-      expect(firstPda.toBase58()).to.not.equal(entryTokenPda.toBase58());
-    });
-
-    it("rejects mint by non-admin signer", async () => {
-      const sequence = new anchor.BN(99);
-      const entryTokenPda = deriveEntryTokenPda(user2.publicKey, 99);
-      const sourceRef = makeSourceRef("non-admin-attempt");
-      const STRIPE = 1;
-
-      try {
-        await program.methods
-          .mintEntryToken(sequence, STRIPE, sourceRef)
-          .accountsStrict({
-            admin: user1.publicKey, // user1 is NOT a vault signer
-            vaultState: vaultStatePda,
-            userWallet: user2.publicKey,
-            entryToken: entryTokenPda,
-            systemProgram: SystemProgram.programId,
-          })
-          .signers([user1])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("Unauthorized");
-      }
-    });
-
-    it("rejects re-mint of the same sequence (PDA collision)", async () => {
-      // user1 already has sequence 0 from the first test
-      const sequence = new anchor.BN(0);
-      const entryTokenPda = deriveEntryTokenPda(user1.publicKey, 0);
-      const sourceRef = makeSourceRef("dupe-attempt");
-      const STRIPE = 1;
-
-      try {
-        await program.methods
-          .mintEntryToken(sequence, STRIPE, sourceRef)
+      await expectRejected(
+        program.methods
+          .grantSeeds(bn(12), 0, DEFAULT_PUBKEY)
           .accountsStrict({
             admin: admin.publicKey,
             vaultState: vaultStatePda,
             userWallet: user1.publicKey,
-            entryToken: entryTokenPda,
+            userAccount: userPda,
+            seedGrant: grantPda,
             systemProgram: SystemProgram.programId,
           })
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        // Anchor's init constraint fails when the account is already initialized.
-        // The error surfaces as "already in use" / custom 0 from the system program.
-        const msg = err.toString();
-        const looksLikeAlreadyInit =
-          msg.includes("already in use") ||
-          msg.includes("custom program error: 0x0") ||
-          msg.includes("custom program error: 0") ||
-          msg.includes("AccountAlreadyInitialized");
-        expect(looksLikeAlreadyInit, `Expected an "already in use" error, got: ${msg}`).to.equal(true);
-      }
-    });
-  });
-
-  describe("consume_entry_token", () => {
-    // Helpers (re-declared in this scope — same as mint_entry_token describe block)
-    const deriveEntryTokenPda = (wallet: PublicKey, sequence: number | bigint): PublicKey => {
-      const seqBuf = Buffer.alloc(8);
-      seqBuf.writeBigUInt64LE(BigInt(sequence));
-      const [pda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("entry_token"), wallet.toBuffer(), seqBuf],
-        program.programId
+          .rpc(),
+        /already in use|custom program error: 0x0|AccountAlreadyInitialized/i
       );
-      return pda;
-    };
 
-    const makeSourceRef = (s: string): number[] => {
-      const buf = Buffer.alloc(64);
-      buf.write(s, 0, "utf8");
-      return Array.from(buf);
-    };
-
-    const deriveContestPda = (cid: Buffer): PublicKey => {
-      const [pda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), cid],
-        program.programId
+      const inviteGrantPda = deriveSeedGrant(
+        user1.publicKey,
+        2,
+        user2.publicKey
       );
-      return pda;
-    };
-
-    const deriveEntryPda = (cid: Buffer, wallet: PublicKey, entryNum: number): PublicKey => {
-      const buf = Buffer.alloc(4);
-      buf.writeUInt32LE(entryNum);
-      const [pda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("entry"), cid, wallet.toBuffer(), buf],
-        program.programId
-      );
-      return pda;
-    };
-
-    const deriveUserPda = (wallet: PublicKey): PublicKey => {
-      const [pda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), wallet.toBuffer()],
-        program.programId
-      );
-      return pda;
-    };
-
-    // Each test uses its own fresh contest so we don't collide with the main test contest
-    const tokenEntryContestId = createHash("sha256").update("token-entry-happy-path").digest();
-    const tokenEntryContestPda = deriveContestPda(tokenEntryContestId);
-
-    it("token-funded managed entry consumes token, awards seeds, does NOT charge USDC", async () => {
-      // Setup: create a fresh contest (admin pays prizes from adminUsdcAccount)
       await program.methods
-        .createContest(
-          Array.from(tokenEntryContestId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(toTokenAmount(9)),
-          5,
-          [],
-          new anchor.BN(0)
-        )
-        .accountsStrict({
-          payer: admin.publicKey,
-          creator: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: tokenEntryContestPda,
-          mint: usdcMint,
-          creatorTokenAccount: adminUsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      // user1 sequence 0 was minted in mint_entry_token describe block and is unconsumed
-      const entryTokenPda = deriveEntryTokenPda(user1.publicKey, 0);
-      const userAccountPda = deriveUserPda(user1.publicKey);
-      const entryPda = deriveEntryPda(tokenEntryContestId, user1.publicKey, 1);
-
-      // Snapshot state BEFORE
-      const tokenBefore = await program.account.entryTokenAccount.fetch(entryTokenPda);
-      expect(tokenBefore.consumed).to.equal(false);
-      expect(tokenBefore.consumedAt).to.equal(null);
-
-      const userBefore = await program.account.userAccount.fetch(userAccountPda);
-      const contestBefore = await program.account.contest.fetch(tokenEntryContestPda);
-      const vaultBefore = await getAccount(connection, vaultUsdcPda);
-
-      await program.methods
-        .enterContestWithToken(1)
-        .accountsStrict({
-          payer: admin.publicKey,
-          wallet: user1.publicKey,
-          vaultState: vaultStatePda,
-          userAccount: userAccountPda,
-          contest: tokenEntryContestPda,
-          contestEntry: entryPda,
-          entryToken: entryTokenPda,
-          season: defaultSeasonPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .signers([user1]) // OPSEC-004: wallet is now a required Signer
-        .rpc();
-
-      // Token is now consumed and timestamp stamped
-      const tokenAfter = await program.account.entryTokenAccount.fetch(entryTokenPda);
-      expect(tokenAfter.consumed).to.equal(true);
-      expect(tokenAfter.consumedAt).to.not.equal(null);
-      expect((tokenAfter.consumedAt as anchor.BN).toNumber()).to.be.greaterThan(0);
-
-      // entry_num=1 → seed_schedule[1] = 19 seeds awarded
-      const userAfter = await program.account.userAccount.fetch(userAccountPda);
-      expect(userAfter.seeds.toNumber()).to.equal(userBefore.seeds.toNumber() + 19);
-
-      // Balance is UNCHANGED (USDC NOT charged)
-      expect(userAfter.balance.toNumber()).to.equal(userBefore.balance.toNumber());
-
-      // Contest entries incremented, entry_fees NOT incremented
-      const contestAfter = await program.account.contest.fetch(tokenEntryContestPda);
-      expect(contestAfter.currentEntries).to.equal(contestBefore.currentEntries + 1);
-      expect(contestAfter.entryFees.toNumber()).to.equal(contestBefore.entryFees.toNumber());
-
-      // Vault USDC balance unchanged
-      const vaultAfter = await getAccount(connection, vaultUsdcPda);
-      expect(Number(vaultAfter.amount)).to.equal(Number(vaultBefore.amount));
-
-      // Contest entry exists
-      const entry = await program.account.contestEntry.fetch(entryPda);
-      expect(entry.wallet.toBase58()).to.equal(user1.publicKey.toBase58());
-      expect(entry.entryNum).to.equal(1);
-      expect(JSON.stringify(entry.status)).to.equal(JSON.stringify({ active: {} }));
-    });
-
-    it("rejects re-consuming an already-consumed token", async () => {
-      // Token at sequence 0 was just consumed above. Try to use it on a new entry.
-      // Create a second fresh contest so the entry PDA seeds differ.
-      const reuseContestId = createHash("sha256").update("token-entry-reuse-attempt").digest();
-      const reuseContestPda = deriveContestPda(reuseContestId);
-
-      await program.methods
-        .createContest(
-          Array.from(reuseContestId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(toTokenAmount(9)),
-          5,
-          [],
-          new anchor.BN(0)
-        )
-        .accountsStrict({
-          payer: admin.publicKey,
-          creator: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: reuseContestPda,
-          mint: usdcMint,
-          creatorTokenAccount: adminUsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const consumedTokenPda = deriveEntryTokenPda(user1.publicKey, 0);
-      const userAccountPda = deriveUserPda(user1.publicKey);
-      const entryPda = deriveEntryPda(reuseContestId, user1.publicKey, 1);
-
-      try {
-        await program.methods
-          .enterContestWithToken(1)
-          .accountsStrict({
-            payer: admin.publicKey,
-            wallet: user1.publicKey,
-            vaultState: vaultStatePda,
-            userAccount: userAccountPda,
-            contest: reuseContestPda,
-            contestEntry: entryPda,
-            entryToken: consumedTokenPda,
-            season: defaultSeasonPda,
-            systemProgram: SystemProgram.programId,
-          })
-          .signers([user1]) // OPSEC-004: wallet is now a required Signer
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("EntryTokenAlreadyConsumed");
-      }
-    });
-
-    it("rejects entry when token owner != wallet", async () => {
-      // user1 has an unconsumed token at sequence 1. user2 tries to use it.
-      // Create another fresh contest for this test
-      const wrongOwnerContestId = createHash("sha256").update("token-wrong-owner").digest();
-      const wrongOwnerContestPda = deriveContestPda(wrongOwnerContestId);
-
-      await program.methods
-        .createContest(
-          Array.from(wrongOwnerContestId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(toTokenAmount(9)),
-          5,
-          [],
-          new anchor.BN(0)
-        )
-        .accountsStrict({
-          payer: admin.publicKey,
-          creator: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: wrongOwnerContestPda,
-          mint: usdcMint,
-          creatorTokenAccount: adminUsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      // user1's unconsumed token (sequence 1)
-      const user1TokenPda = deriveEntryTokenPda(user1.publicKey, 1);
-      // user2's account and a fresh entry PDA
-      const user2AccountPda = deriveUserPda(user2.publicKey);
-      const entryPda = deriveEntryPda(wrongOwnerContestId, user2.publicKey, 1);
-
-      try {
-        await program.methods
-          .enterContestWithToken(1)
-          .accountsStrict({
-            payer: admin.publicKey,
-            wallet: user2.publicKey,
-            vaultState: vaultStatePda,
-            userAccount: user2AccountPda,
-            contest: wrongOwnerContestPda,
-            contestEntry: entryPda,
-            entryToken: user1TokenPda,
-            season: defaultSeasonPda,
-            systemProgram: SystemProgram.programId,
-          })
-          .signers([user2]) // OPSEC-004: wallet is now a required Signer
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("EntryTokenWrongOwner");
-      }
-    });
-
-    it("backwards compat: enter_contest (no token) still charges USDC and awards seeds", async () => {
-      // Create yet another contest so we don't collide
-      const backCompatContestId = createHash("sha256").update("token-backcompat").digest();
-      const backCompatContestPda = deriveContestPda(backCompatContestId);
-
-      await program.methods
-        .createContest(
-          Array.from(backCompatContestId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(toTokenAmount(9)),
-          5,
-          [],
-          new anchor.BN(0)
-        )
-        .accountsStrict({
-          payer: admin.publicKey,
-          creator: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: backCompatContestPda,
-          mint: usdcMint,
-          creatorTokenAccount: adminUsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      // user1 has an existing UserAccount with non-zero balance from earlier tests
-      const userAccountPda = deriveUserPda(user1.publicKey);
-      const entryPda = deriveEntryPda(backCompatContestId, user1.publicKey, 1);
-
-      const userBefore = await program.account.userAccount.fetch(userAccountPda);
-      const contestBefore = await program.account.contest.fetch(backCompatContestPda);
-
-      // Original enter_contest (no entry_token in accounts)
-      await program.methods
-        .enterContest(1)
-        .accountsStrict({
-          payer: admin.publicKey,
-          wallet: user1.publicKey,
-          vaultState: vaultStatePda,
-          userAccount: userAccountPda,
-          contest: backCompatContestPda,
-          contestEntry: entryPda,
-          season: defaultSeasonPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const userAfter = await program.account.userAccount.fetch(userAccountPda);
-      const contestAfter = await program.account.contest.fetch(backCompatContestPda);
-
-      // USDC IS charged: balance decreased by entry fee
-      expect(userAfter.balance.toNumber()).to.equal(
-        userBefore.balance.toNumber() - toTokenAmount(9)
-      );
-      // entry_num=1 → seed_schedule[1] = 19 seeds awarded
-      expect(userAfter.seeds.toNumber()).to.equal(userBefore.seeds.toNumber() + 19);
-      // Entry fees collected on the contest
-      expect(contestAfter.entryFees.toNumber()).to.equal(
-        contestBefore.entryFees.toNumber() + toTokenAmount(9)
-      );
-      expect(contestAfter.currentEntries).to.equal(contestBefore.currentEntries + 1);
-    });
-
-    it("token-funded direct entry (Phantom path) consumes token, awards seeds, NO USDC transfer", async () => {
-      // We need a fresh user with: SOL, a UserAccount PDA, an unconsumed entry token.
-      // user2 already has all of these (UserAccount created in create_user_account tests).
-      // First, mint an unconsumed token for user2 at a fresh sequence.
-      const seq = new anchor.BN(0);
-      const user2TokenPda = deriveEntryTokenPda(user2.publicKey, 0);
-      const sourceRef = makeSourceRef("direct-entry-token-test");
-      const STRIPE = 1;
-
-      await program.methods
-        .mintEntryToken(seq, STRIPE, sourceRef)
+        .grantSeeds(bn(45), 2, user2.publicKey)
         .accountsStrict({
           admin: admin.publicKey,
           vaultState: vaultStatePda,
-          userWallet: user2.publicKey,
-          entryToken: user2TokenPda,
+          userWallet: user1.publicKey,
+          userAccount: userPda,
+          seedGrant: inviteGrantPda,
           systemProgram: SystemProgram.programId,
         })
         .rpc();
 
-      // Fresh contest for the direct-token path
-      const directContestId = createHash("sha256").update("token-direct-happy-path").digest();
-      const directContestPda = deriveContestPda(directContestId);
-
-      await program.methods
-        .createContest(
-          Array.from(directContestId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(toTokenAmount(9)),
-          5,
-          [],
-          new anchor.BN(0)
-        )
-        .accountsStrict({
-          payer: admin.publicKey,
-          creator: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: directContestPda,
-          mint: usdcMint,
-          creatorTokenAccount: adminUsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const user2AccountPda = deriveUserPda(user2.publicKey);
-      const entryPda = deriveEntryPda(directContestId, user2.publicKey, 1);
-
-      const tokenBefore = await program.account.entryTokenAccount.fetch(user2TokenPda);
-      expect(tokenBefore.consumed).to.equal(false);
-      const userBefore = await program.account.userAccount.fetch(user2AccountPda);
-      const user2UsdcBefore = await getAccount(connection, user2UsdcAccount);
-      const vaultBefore = await getAccount(connection, vaultUsdcPda);
-
-      await program.methods
-        .enterContestDirectWithToken(1)
-        .accountsStrict({
-          payer: admin.publicKey,
-          user: user2.publicKey,
-          userAccount: user2AccountPda,
-          vaultState: vaultStatePda,
-          contest: directContestPda,
-          contestEntry: entryPda,
-          entryToken: user2TokenPda,
-          season: defaultSeasonPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .signers([user2])
-        .rpc();
-
-      // Token consumed + stamped
-      const tokenAfter = await program.account.entryTokenAccount.fetch(user2TokenPda);
-      expect(tokenAfter.consumed).to.equal(true);
-      expect(tokenAfter.consumedAt).to.not.equal(null);
-
-      // entry_num=1 → seed_schedule[1] = 19 seeds awarded
-      const userAfter = await program.account.userAccount.fetch(user2AccountPda);
-      expect(userAfter.seeds.toNumber()).to.equal(userBefore.seeds.toNumber() + 19);
-
-      // user2's USDC ATA unchanged (NO direct transfer)
-      const user2UsdcAfter = await getAccount(connection, user2UsdcAccount);
-      expect(Number(user2UsdcAfter.amount)).to.equal(Number(user2UsdcBefore.amount));
-
-      // Vault USDC unchanged
-      const vaultAfter = await getAccount(connection, vaultUsdcPda);
-      expect(Number(vaultAfter.amount)).to.equal(Number(vaultBefore.amount));
-
-      // Entry recorded
-      const entry = await program.account.contestEntry.fetch(entryPda);
-      expect(entry.wallet.toBase58()).to.equal(user2.publicKey.toBase58());
+      await expectRejected(
+        program.methods
+          .grantSeeds(bn(1_001), 1, DEFAULT_PUBKEY)
+          .accountsStrict({
+            admin: admin.publicKey,
+            vaultState: vaultStatePda,
+            userWallet: user1.publicKey,
+            userAccount: userPda,
+            seedGrant: deriveSeedGrant(user1.publicKey, 1, DEFAULT_PUBKEY),
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc(),
+        /SeedGrantAmountInvalid/i
+      );
     });
   });
 
-  // ──────────────────────────────────────────────────────────────────────
-  // v0.15.0 emergency pause / unpause
-  // ──────────────────────────────────────────────────────────────────────
-  describe("pause / unpause (v0.15.0)", () => {
-    let pauseContestId: Buffer;
-    let pauseContestPda: PublicKey;
-    let user1Pda: PublicKey;
-    let user2Pda: PublicKey;
+  describe("governance and currency registry", () => {
+    it("rotates signers with 2-of-3 while preserving authorizing cosigners", async () => {
+      const replacement = Keypair.generate();
+      await fund(replacement.publicKey);
 
-    const derivePauseUserPda = (wallet: PublicKey): PublicKey =>
-      PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), wallet.toBuffer()],
-        program.programId
-      )[0];
-
-    const derivePauseEntryPda = (cId: Buffer, wallet: PublicKey, entryNum: number): PublicKey => {
-      const buf = Buffer.alloc(4);
-      buf.writeUInt32LE(entryNum);
-      return PublicKey.findProgramAddressSync(
-        [Buffer.from("entry"), cId, wallet.toBuffer(), buf],
-        program.programId
-      )[0];
-    };
-
-    const derivePauseEntryTokenPda = (wallet: PublicKey, sequence: number | bigint): PublicKey => {
-      const seqBuf = Buffer.alloc(8);
-      seqBuf.writeBigUInt64LE(BigInt(sequence));
-      return PublicKey.findProgramAddressSync(
-        [Buffer.from("entry_token"), wallet.toBuffer(), seqBuf],
-        program.programId
-      )[0];
-    };
-
-    const buildReason = (s: string): number[] => {
-      const buf = Buffer.alloc(64);
-      buf.write(s, 0, "utf8");
-      return Array.from(buf);
-    };
-
-    const pauseVault = async () => {
       await program.methods
-        .pause(buildReason("test pause") as any)
+        .updateSigners([
+          admin.publicKey,
+          signer2.publicKey,
+          replacement.publicKey,
+        ])
         .accountsStrict({
           admin: admin.publicKey,
           cosigner: signer2.publicKey,
@@ -2521,9 +826,581 @@ describe("turf_vault", () => {
         })
         .signers([signer2])
         .rpc();
-    };
 
-    const unpauseVault = async () => {
+      let vault = await program.account.vaultState.fetch(vaultStatePda);
+      expect(vault.signers[2].toBase58()).to.equal(
+        replacement.publicKey.toBase58()
+      );
+      expect(vault.threshold).to.equal(2);
+
+      await program.methods
+        .updateSigners([admin.publicKey, signer2.publicKey, signer3.publicKey])
+        .accountsStrict({
+          admin: admin.publicKey,
+          cosigner: signer2.publicKey,
+          vaultState: vaultStatePda,
+        })
+        .signers([signer2])
+        .rpc();
+
+      vault = await program.account.vaultState.fetch(vaultStatePda);
+      expect(vault.signers[2].toBase58()).to.equal(
+        signer3.publicKey.toBase58()
+      );
+    });
+
+    it("rejects duplicate, default, or continuity-breaking signer rotations", async () => {
+      await expectRejected(
+        program.methods
+          .updateSigners([admin.publicKey, admin.publicKey, signer3.publicKey])
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: signer2.publicKey,
+            vaultState: vaultStatePda,
+          })
+          .signers([signer2])
+          .rpc(),
+        /DuplicateSigner/i
+      );
+
+      await expectRejected(
+        program.methods
+          .updateSigners([admin.publicKey, signer2.publicKey, DEFAULT_PUBKEY])
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: signer2.publicKey,
+            vaultState: vaultStatePda,
+          })
+          .signers([signer2])
+          .rpc(),
+        /SignerContinuityRequired/i
+      );
+
+      await expectRejected(
+        program.methods
+          .updateSigners([
+            admin.publicKey,
+            Keypair.generate().publicKey,
+            Keypair.generate().publicKey,
+          ])
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: signer2.publicKey,
+            vaultState: vaultStatePda,
+          })
+          .signers([signer2])
+          .rpc(),
+        /SignerContinuityRequired/i
+      );
+    });
+
+    it("registers and deactivates a currency without reclaiming its slot", async () => {
+      await program.methods
+        .registerCurrency(1)
+        .accountsStrict({
+          admin: admin.publicKey,
+          cosigner: signer2.publicKey,
+          vaultState: vaultStatePda,
+          mint: bonusMint,
+          opRevAta: bonusOpRevPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+        })
+        .signers([signer2])
+        .rpc();
+
+      let vault = await program.account.vaultState.fetch(vaultStatePda);
+      expect(vault.acceptedCurrencies[2].mint.toBase58()).to.equal(
+        bonusMint.toBase58()
+      );
+      expect(vault.acceptedCurrencies[2].opRevAta.toBase58()).to.equal(
+        bonusOpRevPda.toBase58()
+      );
+      expect(vault.acceptedCurrencies[2].active).to.equal(1);
+
+      bonusContest = await createContest("bonus-before-deactivate", {
+        fees: { 2: amount(4) },
+        prizePool: amount(4),
+        payouts: [amount(4)],
+      });
+
+      await expectRejected(
+        program.methods
+          .registerCurrency(1)
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: signer2.publicKey,
+            vaultState: vaultStatePda,
+            mint: bonusMint,
+            opRevAta: bonusOpRevPda,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+            rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+          })
+          .signers([signer2])
+          .rpc(),
+        /already in use|CurrencyAlreadyRegistered|custom program error: 0x0/i
+      );
+
+      await program.methods
+        .deactivateCurrency(2)
+        .accountsStrict({
+          admin: admin.publicKey,
+          cosigner: signer2.publicKey,
+          vaultState: vaultStatePda,
+        })
+        .signers([signer2])
+        .rpc();
+
+      vault = await program.account.vaultState.fetch(vaultStatePda);
+      expect(vault.acceptedCurrencies[2].mint.toBase58()).to.equal(
+        bonusMint.toBase58()
+      );
+      expect(vault.acceptedCurrencies[2].active).to.equal(0);
+
+      await expectRejected(
+        createContest("inactive-currency-create", {
+          fees: { 2: amount(1) },
+          prizePool: amount(1),
+          payouts: [amount(1)],
+        }),
+        /CurrencyNotActive/i
+      );
+    });
+  });
+
+  describe("contest lifecycle and entries", () => {
+    it("creates a contest with per-currency fees, payout tiers, prize pool, and lock timestamp", async () => {
+      const adminBefore = await tokenAmount(adminUsdcAta);
+      paidContest = await createContest("matrix-paid-contest", {
+        fees: { 0: amount(9), 1: amount(7) },
+        maxEntries: 5,
+        prizePool: amount(40),
+        payouts: [amount(40)],
+        lockTimestamp: 0,
+      });
+
+      const contest = await program.account.contest.fetch(
+        paidContest.contestPda
+      );
+      expect(contest.entryFeeByCurrency[0].toNumber()).to.equal(amount(9));
+      expect(contest.entryFeeByCurrency[1].toNumber()).to.equal(amount(7));
+      expect(contest.prizePool.toNumber()).to.equal(amount(40));
+      expect(contest.lockTimestamp.toNumber()).to.equal(0);
+      expect(statusName(contest.status)).to.equal("open");
+      expect(await tokenAmount(paidContest.prizePoolPda)).to.equal(amount(40));
+      expect(adminBefore - (await tokenAmount(adminUsdcAta))).to.equal(
+        amount(40)
+      );
+    });
+
+    it("rejects invalid payout tiers and zero-fee zero-prize contests", async () => {
+      await expectRejected(
+        createContest("invalid-payout-sum", {
+          fees: { 0: amount(9) },
+          prizePool: amount(40),
+          payouts: [amount(39)],
+        }),
+        /InvalidPayoutTiers/i
+      );
+
+      await expectRejected(
+        createContest("no-fees-no-prize", {
+          fees: {},
+          prizePool: 0,
+          payouts: [],
+        }),
+        /FeeAndPrizeBothZero/i
+      );
+    });
+
+    it("accepts USDC and USDT entries by moving user ATA funds to op_rev", async () => {
+      const user1Pda = deriveUser(user1.publicKey);
+      const user2Pda = deriveUser(user2.publicKey);
+      const user1Before = await program.account.userAccount.fetch(user1Pda);
+      const user1UsdcBefore = await tokenAmount(user1UsdcAta);
+      const opUsdcBefore = await tokenAmount(usdcOpRevPda);
+
+      const user1Entry = await enterPaid(
+        paidContest,
+        user1,
+        user1Pda,
+        user1UsdcAta,
+        usdcMint,
+        usdcOpRevPda,
+        0,
+        0
+      );
+
+      const user1After = await program.account.userAccount.fetch(user1Pda);
+      const entry1 = await program.account.contestEntry.fetch(user1Entry);
+      expect(user1UsdcBefore - (await tokenAmount(user1UsdcAta))).to.equal(
+        amount(9)
+      );
+      expect((await tokenAmount(usdcOpRevPda)) - opUsdcBefore).to.equal(
+        amount(9)
+      );
+      expect(
+        user1After.seeds.toNumber() - user1Before.seeds.toNumber()
+      ).to.equal(25);
+      expect(user1After.entries - user1Before.entries).to.equal(1);
+      expect(entry1.currencyIdx).to.equal(0);
+      expect(statusName(entry1.status)).to.equal("active");
+
+      const user2Before = await program.account.userAccount.fetch(user2Pda);
+      const user2UsdtBefore = await tokenAmount(user2UsdtAta);
+      const opUsdtBefore = await tokenAmount(usdtOpRevPda);
+
+      await enterPaid(
+        paidContest,
+        user2,
+        user2Pda,
+        user2UsdtAta,
+        usdtMint,
+        usdtOpRevPda,
+        1,
+        1
+      );
+
+      const user2After = await program.account.userAccount.fetch(user2Pda);
+      const contest = await program.account.contest.fetch(
+        paidContest.contestPda
+      );
+      expect(user2UsdtBefore - (await tokenAmount(user2UsdtAta))).to.equal(
+        amount(7)
+      );
+      expect((await tokenAmount(usdtOpRevPda)) - opUsdtBefore).to.equal(
+        amount(7)
+      );
+      expect(
+        user2After.seeds.toNumber() - user2Before.seeds.toNumber()
+      ).to.equal(19);
+      expect(contest.currentEntries).to.equal(2);
+      expect(contest.entryFees[0].toNumber()).to.equal(amount(9));
+      expect(contest.entryFees[1].toNumber()).to.equal(amount(7));
+    });
+
+    it("rejects inactive currency, insufficient funds, full contest, and lock gate entries", async () => {
+      await expectRejected(
+        enterPaid(
+          bonusContest,
+          user1,
+          deriveUser(user1.publicKey),
+          user1BonusAta,
+          bonusMint,
+          bonusOpRevPda,
+          2,
+          0
+        ),
+        /CurrencyNotActive/i
+      );
+
+      const broke = Keypair.generate();
+      await fund(broke.publicKey);
+      const brokePda = await createUser(broke.publicKey, "broke-user");
+      const brokeUsdc = await ata(usdcMint, broke.publicKey, 0);
+      await expectRejected(
+        enterPaid(
+          paidContest,
+          broke,
+          brokePda,
+          brokeUsdc,
+          usdcMint,
+          usdcOpRevPda,
+          0,
+          2
+        ),
+        /insufficient funds|0x1|custom program error/i
+      );
+
+      const maxContest = await createContest("max-entry-contest", {
+        fees: { 0: amount(1) },
+        maxEntries: 1,
+        prizePool: amount(1),
+        payouts: [amount(1)],
+      });
+      await enterPaid(
+        maxContest,
+        user1,
+        deriveUser(user1.publicKey),
+        user1UsdcAta,
+        usdcMint,
+        usdcOpRevPda,
+        0,
+        0
+      );
+      await expectRejected(
+        enterPaid(
+          maxContest,
+          user2,
+          deriveUser(user2.publicKey),
+          user2UsdcAta,
+          usdcMint,
+          usdcOpRevPda,
+          0,
+          0
+        ),
+        /ContestFull/i
+      );
+
+      const lockedContest = await createContest("locked-entry-contest", {
+        fees: { 0: amount(1) },
+        prizePool: amount(1),
+        payouts: [amount(1)],
+        lockTimestamp: now() - 1,
+      });
+      await expectRejected(
+        enterPaid(
+          lockedContest,
+          user1,
+          deriveUser(user1.publicKey),
+          user1UsdcAta,
+          usdcMint,
+          usdcOpRevPda,
+          0,
+          0
+        ),
+        /ContestLocked/i
+      );
+    });
+
+    it("enforces set_contest_lock_time and set_contest_conclusion_time rules", async () => {
+      const timingContest = await createContest("timing-contest", {
+        fees: { 0: amount(1) },
+        prizePool: amount(1),
+        payouts: [amount(1)],
+      });
+      const lockAt = now() + 120;
+      const conclusionAt = lockAt + 120;
+
+      await program.methods
+        .setContestLockTime(bn(lockAt))
+        .accountsStrict({
+          admin: admin.publicKey,
+          cosigner: null,
+          vaultState: vaultStatePda,
+          contest: timingContest.contestPda,
+        })
+        .rpc();
+
+      await expectRejected(
+        program.methods
+          .setContestConclusionTime(bn(lockAt - 1))
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: null,
+            vaultState: vaultStatePda,
+            contest: timingContest.contestPda,
+          })
+          .rpc(),
+        /InvalidTimestamp/i
+      );
+
+      await program.methods
+        .setContestConclusionTime(bn(conclusionAt))
+        .accountsStrict({
+          admin: admin.publicKey,
+          cosigner: null,
+          vaultState: vaultStatePda,
+          contest: timingContest.contestPda,
+        })
+        .rpc();
+
+      await expectRejected(
+        program.methods
+          .setContestConclusionTime(bn(conclusionAt + 60))
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: null,
+            vaultState: vaultStatePda,
+            contest: timingContest.contestPda,
+          })
+          .rpc(),
+        /Unauthorized/i
+      );
+
+      await program.methods
+        .setContestConclusionTime(bn(conclusionAt + 60))
+        .accountsStrict({
+          admin: admin.publicKey,
+          cosigner: signer2.publicKey,
+          vaultState: vaultStatePda,
+          contest: timingContest.contestPda,
+        })
+        .signers([signer2])
+        .rpc();
+
+      const postLockContest = await createContest("post-lock-amend-contest", {
+        fees: { 0: amount(1) },
+        prizePool: amount(1),
+        payouts: [amount(1)],
+        lockTimestamp: now() - 1,
+      });
+      await expectRejected(
+        program.methods
+          .setContestLockTime(bn(now() + 300))
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: null,
+            vaultState: vaultStatePda,
+            contest: postLockContest.contestPda,
+          })
+          .rpc(),
+        /Unauthorized/i
+      );
+      await program.methods
+        .setContestLockTime(bn(now() + 300))
+        .accountsStrict({
+          admin: admin.publicKey,
+          cosigner: signer2.publicKey,
+          vaultState: vaultStatePda,
+          contest: postLockContest.contestPda,
+        })
+        .signers([signer2])
+        .rpc();
+    });
+  });
+
+  describe("entry tokens and pause controls", () => {
+    it("mints idempotent token-entry vouchers and consumes one without charging currency", async () => {
+      const tokenContest = await createContest("token-entry-contest", {
+        fees: { 0: amount(9) },
+        prizePool: amount(9),
+        payouts: [amount(9)],
+      });
+      const opBefore = await tokenAmount(usdcOpRevPda);
+      const userBefore = await program.account.userAccount.fetch(
+        deriveUser(user1.publicKey)
+      );
+      const token = await mintEntryToken(
+        user1.publicKey,
+        "stripe-session-token-entry"
+      );
+
+      await expectRejected(
+        program.methods
+          .mintEntryToken(0, token.ref as any, token.hash as any)
+          .accountsStrict({
+            admin: admin.publicKey,
+            vaultState: vaultStatePda,
+            userWallet: user1.publicKey,
+            entryToken: token.pda,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc(),
+        /already in use|custom program error: 0x0|AccountAlreadyInitialized/i
+      );
+
+      const entryPda = await enterWithToken(
+        tokenContest,
+        user1,
+        deriveUser(user1.publicKey),
+        token.pda,
+        0
+      );
+      const entry = await program.account.contestEntry.fetch(entryPda);
+      const consumed = await program.account.entryTokenAccount.fetch(token.pda);
+      const userAfter = await program.account.userAccount.fetch(
+        deriveUser(user1.publicKey)
+      );
+      expect(entry.currencyIdx).to.equal(255);
+      expect(consumed.consumed).to.equal(true);
+      expect((await tokenAmount(usdcOpRevPda)) - opBefore).to.equal(0);
+      expect(userAfter.seeds.toNumber() - userBefore.seeds.toNumber()).to.equal(
+        25
+      );
+
+      await expectRejected(
+        enterWithToken(
+          tokenContest,
+          user1,
+          deriveUser(user1.publicKey),
+          token.pda,
+          1
+        ),
+        /EntryTokenAlreadyConsumed/i
+      );
+
+      const wrongOwnerToken = await mintEntryToken(
+        user1.publicKey,
+        "wrong-owner-token"
+      );
+      await expectRejected(
+        enterWithToken(
+          tokenContest,
+          user2,
+          deriveUser(user2.publicKey),
+          wrongOwnerToken.pda,
+          0
+        ),
+        /EntryTokenWrongOwner/i
+      );
+    });
+
+    it("pause blocks paid and token entries only; unpause restores both", async () => {
+      const pauseContest = await createContest("pause-contest", {
+        fees: { 0: amount(1) },
+        prizePool: amount(1),
+        payouts: [amount(1)],
+        maxEntries: 4,
+      });
+
+      await program.methods
+        .pause(reason("local verification pause") as any)
+        .accountsStrict({
+          admin: admin.publicKey,
+          cosigner: signer2.publicKey,
+          vaultState: vaultStatePda,
+        })
+        .signers([signer2])
+        .rpc();
+
+      let vault = await program.account.vaultState.fetch(vaultStatePda);
+      expect(vault.paused).to.equal(1);
+
+      await expectRejected(
+        enterPaid(
+          pauseContest,
+          user1,
+          deriveUser(user1.publicKey),
+          user1UsdcAta,
+          usdcMint,
+          usdcOpRevPda,
+          0,
+          0
+        ),
+        /VaultPaused/i
+      );
+
+      const pausedToken = await mintEntryToken(
+        user1.publicKey,
+        "paused-token-mint-still-allowed"
+      );
+      await expectRejected(
+        enterWithToken(
+          pauseContest,
+          user1,
+          deriveUser(user1.publicKey),
+          pausedToken.pda,
+          1
+        ),
+        /VaultPaused/i
+      );
+
+      await expectRejected(
+        program.methods
+          .pause(reason("bad cosigner") as any)
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: stranger.publicKey,
+            vaultState: vaultStatePda,
+          })
+          .signers([stranger])
+          .rpc(),
+        /Unauthorized/i
+      );
+
       await program.methods
         .unpause()
         .accountsStrict({
@@ -2533,509 +1410,438 @@ describe("turf_vault", () => {
         })
         .signers([signer2])
         .rpc();
-    };
 
-    before(async () => {
-      user1Pda = derivePauseUserPda(user1.publicKey);
-      user2Pda = derivePauseUserPda(user2.publicKey);
+      vault = await program.account.vaultState.fetch(vaultStatePda);
+      expect(vault.paused).to.equal(0);
 
-      // Fresh open contest with prizes=0 entry_fee=$1 so we can attempt
-      // entries with both managed and direct paths during pause tests.
-      pauseContestId = createHash("sha256").update("pause-test-contest").digest();
-      [pauseContestPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("contest"), pauseContestId],
-        program.programId
+      await enterPaid(
+        pauseContest,
+        user1,
+        deriveUser(user1.publicKey),
+        user1UsdcAta,
+        usdcMint,
+        usdcOpRevPda,
+        0,
+        0
       );
-
-      await program.methods
-        .createContest(
-          Array.from(pauseContestId) as any,
-          DEFAULT_SEASON_ID,
-          new anchor.BN(toTokenAmount(1)),
-          10,
-          [],
-          new anchor.BN(0)
-        )
-        .accountsStrict({
-          payer: admin.publicKey,
-          creator: admin.publicKey,
-          vaultState: vaultStatePda,
-          contest: pauseContestPda,
-          mint: usdcMint,
-          creatorTokenAccount: adminUsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-    });
-
-    // Belt-and-suspenders: leave the vault unpaused regardless of how each
-    // test ended. Subsequent describe blocks would otherwise hit VaultPaused.
-    afterEach(async () => {
-      const vault = await program.account.vaultState.fetch(vaultStatePda);
-      if (vault.paused) await unpauseVault();
-    });
-
-    it("pause sets paused=true with valid 2-of-3 cosign", async () => {
-      await pauseVault();
-      const vault = await program.account.vaultState.fetch(vaultStatePda);
-      expect(vault.paused).to.equal(true);
-    });
-
-    it("unpause sets paused=false with valid 2-of-3 cosign", async () => {
-      await pauseVault();
-      await unpauseVault();
-      const vault = await program.account.vaultState.fetch(vaultStatePda);
-      expect(vault.paused).to.equal(false);
-    });
-
-    it("rejects pause with the same signer twice", async () => {
-      try {
-        await program.methods
-          .pause(buildReason("nope") as any)
-          .accountsStrict({
-            admin: admin.publicKey,
-            cosigner: admin.publicKey,
-            vaultState: vaultStatePda,
-          })
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("Unauthorized");
-      }
-    });
-
-    it("rejects pause with a non-signer cosigner", async () => {
-      const stranger = Keypair.generate();
-      await provider.sendAndConfirm(
-        new anchor.web3.Transaction().add(
-          anchor.web3.SystemProgram.transfer({
-            fromPubkey: admin.publicKey,
-            toPubkey: stranger.publicKey,
-            lamports: LAMPORTS_PER_SOL,
-          })
-        )
-      );
-      try {
-        await program.methods
-          .pause(buildReason("nope") as any)
-          .accountsStrict({
-            admin: admin.publicKey,
-            cosigner: stranger.publicKey,
-            vaultState: vaultStatePda,
-          })
-          .signers([stranger])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("Unauthorized");
-      }
-    });
-
-    it("rejects unpause with the same signer twice", async () => {
-      await pauseVault();
-      try {
-        await program.methods
-          .unpause()
-          .accountsStrict({
-            admin: admin.publicKey,
-            cosigner: admin.publicKey,
-            vaultState: vaultStatePda,
-          })
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("Unauthorized");
-      }
-    });
-
-    it("paused vault rejects deposit (VaultPaused)", async () => {
-      await pauseVault();
-      try {
-        await program.methods
-          .deposit(new anchor.BN(toTokenAmount(1)))
-          .accountsStrict({
-            user: user1.publicKey,
-            userAccount: user1Pda,
-            vaultState: vaultStatePda,
-            mint: usdcMint,
-            userTokenAccount: user1UsdcAccount,
-            vaultTokenAccount: vaultUsdcPda,
-            tokenProgram: TOKEN_PROGRAM_ID,
-          })
-          .signers([user1])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("VaultPaused");
-      }
-    });
-
-    it("paused vault rejects withdraw (VaultPaused)", async () => {
-      await pauseVault();
-      try {
-        await program.methods
-          .withdraw(new anchor.BN(toTokenAmount(1)))
-          .accountsStrict({
-            user: user1.publicKey,
-            userAccount: user1Pda,
-            vaultState: vaultStatePda,
-            mint: usdcMint,
-            userTokenAccount: user1UsdcAccount,
-            vaultTokenAccount: vaultUsdcPda,
-            tokenProgram: TOKEN_PROGRAM_ID,
-          })
-          .signers([user1])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("VaultPaused");
-      }
-    });
-
-    it("paused vault rejects enter_contest (managed)", async () => {
-      await pauseVault();
-      const entryPda = derivePauseEntryPda(pauseContestId, user1.publicKey, 100);
-      try {
-        await program.methods
-          .enterContest(100)
-          .accountsStrict({
-            payer: admin.publicKey,
-            wallet: user1.publicKey,
-            vaultState: vaultStatePda,
-            userAccount: user1Pda,
-            contest: pauseContestPda,
-            contestEntry: entryPda,
-            season: defaultSeasonPda,
-            systemProgram: SystemProgram.programId,
-          })
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("VaultPaused");
-      }
-    });
-
-    it("paused vault rejects enter_contest_direct (Phantom)", async () => {
-      await pauseVault();
-      const entryPda = derivePauseEntryPda(pauseContestId, user2.publicKey, 100);
-      try {
-        await program.methods
-          .enterContestDirect(100)
-          .accountsStrict({
-            payer: admin.publicKey,
-            user: user2.publicKey,
-            userAccount: user2Pda,
-            vaultState: vaultStatePda,
-            contest: pauseContestPda,
-            contestEntry: entryPda,
-            mint: usdcMint,
-            userTokenAccount: user2UsdcAccount,
-            vaultTokenAccount: vaultUsdcPda,
-            tokenProgram: TOKEN_PROGRAM_ID,
-            season: defaultSeasonPda,
-            systemProgram: SystemProgram.programId,
-          })
-          .signers([user2])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("VaultPaused");
-      }
-    });
-
-    it("paused vault rejects enter_contest_with_token (managed token)", async () => {
-      // Mint a token to user1 BEFORE pausing so we have an unconsumed one
-      // to attempt to consume while paused. mint_entry_token is NOT gated.
-      const sequence = 7000;
-      const tokenPda = derivePauseEntryTokenPda(user1.publicKey, sequence);
-      const sourceRef = Buffer.alloc(64);
-      sourceRef.write("pause-test-managed-token");
-      await program.methods
-        .mintEntryToken(new anchor.BN(sequence), 0, Array.from(sourceRef) as any)
-        .accountsStrict({
-          admin: admin.publicKey,
-          vaultState: vaultStatePda,
-          userWallet: user1.publicKey,
-          entryToken: tokenPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      await pauseVault();
-      const entryPda = derivePauseEntryPda(pauseContestId, user1.publicKey, 101);
-      try {
-        await program.methods
-          .enterContestWithToken(101)
-          .accountsStrict({
-            payer: admin.publicKey,
-            wallet: user1.publicKey,
-            vaultState: vaultStatePda,
-            userAccount: user1Pda,
-            contest: pauseContestPda,
-            contestEntry: entryPda,
-            entryToken: tokenPda,
-            season: defaultSeasonPda,
-            systemProgram: SystemProgram.programId,
-          })
-          .signers([user1])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("VaultPaused");
-      }
-    });
-
-    it("paused vault rejects enter_contest_direct_with_token (Phantom token)", async () => {
-      // Mint a token to user2 BEFORE pausing.
-      const sequence = 7001;
-      const tokenPda = derivePauseEntryTokenPda(user2.publicKey, sequence);
-      const sourceRef = Buffer.alloc(64);
-      sourceRef.write("pause-test-direct-token");
-      await program.methods
-        .mintEntryToken(new anchor.BN(sequence), 0, Array.from(sourceRef) as any)
-        .accountsStrict({
-          admin: admin.publicKey,
-          vaultState: vaultStatePda,
-          userWallet: user2.publicKey,
-          entryToken: tokenPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      await pauseVault();
-      const entryPda = derivePauseEntryPda(pauseContestId, user2.publicKey, 101);
-      try {
-        await program.methods
-          .enterContestDirectWithToken(101)
-          .accountsStrict({
-            payer: admin.publicKey,
-            user: user2.publicKey,
-            userAccount: user2Pda,
-            vaultState: vaultStatePda,
-            contest: pauseContestPda,
-            contestEntry: entryPda,
-            entryToken: tokenPda,
-            season: defaultSeasonPda,
-            systemProgram: SystemProgram.programId,
-          })
-          .signers([user2])
-          .rpc();
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("VaultPaused");
-      }
-    });
-
-    it("paused vault still allows mint_entry_token (admin op)", async () => {
-      await pauseVault();
-      const sequence = 7002;
-      const tokenPda = derivePauseEntryTokenPda(user1.publicKey, sequence);
-      const sourceRef = Buffer.alloc(64);
-      sourceRef.write("paused-mint-allowed");
-
-      await program.methods
-        .mintEntryToken(new anchor.BN(sequence), 0, Array.from(sourceRef) as any)
-        .accountsStrict({
-          admin: admin.publicKey,
-          vaultState: vaultStatePda,
-          userWallet: user1.publicKey,
-          entryToken: tokenPda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      const token = await program.account.entryTokenAccount.fetch(tokenPda);
-      expect(token.owner.toBase58()).to.equal(user1.publicKey.toBase58());
-      expect(token.consumed).to.equal(false);
-    });
-
-    it("unpause re-enables deposit", async () => {
-      await pauseVault();
-      await unpauseVault();
-
-      // Fresh deposit should succeed again — proves unpause actually
-      // lifts the gate, not just flips the flag.
-      const before = await program.account.userAccount.fetch(user1Pda);
-      await program.methods
-        .deposit(new anchor.BN(toTokenAmount(1)))
-        .accountsStrict({
-          user: user1.publicKey,
-          userAccount: user1Pda,
-          vaultState: vaultStatePda,
-          mint: usdcMint,
-          userTokenAccount: user1UsdcAccount,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .signers([user1])
-        .rpc();
-      const after = await program.account.userAccount.fetch(user1Pda);
-      expect(after.balance.toNumber()).to.equal(
-        before.balance.toNumber() + toTokenAmount(1)
+      await enterWithToken(
+        pauseContest,
+        user1,
+        deriveUser(user1.publicKey),
+        pausedToken.pda,
+        1
       );
     });
   });
 
-  // ──────────────────────────────────────────────────────────────────────
-  // v0.15.0 withdraw daily cap ($100 / 24h per user)
-  // ──────────────────────────────────────────────────────────────────────
-  describe("withdraw daily cap (v0.15.0)", () => {
-    // Fresh user with $300 in the vault so we can exercise the $100 cap
-    // without colliding with user1/user2's existing balances + state.
-    let capUser: Keypair;
-    let capUserUsdc: PublicKey;
-    let capUserPda: PublicKey;
+  describe("settlement, cancellation, closeout, and treasury", () => {
+    it("settles a locked contest from prize_pool to winner ATA with 2-of-3", async () => {
+      await lockContestNow(paidContest);
 
-    const setupFundedUser = async (
-      name: string,
-      depositDollars: number
-    ): Promise<{ user: Keypair; ata: PublicKey; pda: PublicKey }> => {
-      const u = Keypair.generate();
-      await provider.sendAndConfirm(
-        new anchor.web3.Transaction().add(
-          anchor.web3.SystemProgram.transfer({
-            fromPubkey: admin.publicKey,
-            toPubkey: u.publicKey,
-            lamports: 5 * LAMPORTS_PER_SOL,
-          })
-        )
+      const user1Pda = deriveUser(user1.publicKey);
+      const user2Pda = deriveUser(user2.publicKey);
+      const user1Entry = deriveEntry(paidContest.id, user1.publicKey, 0);
+      const user2Entry = deriveEntry(paidContest.id, user2.publicKey, 1);
+      const user1Before = await program.account.userAccount.fetch(user1Pda);
+      const prizePoolBefore = await tokenAmount(paidContest.prizePoolPda);
+      const user1AtaBefore = await tokenAmount(user1UsdcAta);
+
+      await program.methods
+        .settleContest([
+          {
+            wallet: user1.publicKey,
+            entryNum: 0,
+            rank: 1,
+            payout: bn(amount(40)),
+          },
+          { wallet: user2.publicKey, entryNum: 1, rank: 2, payout: bn(0) },
+        ])
+        .accountsStrict({
+          admin: admin.publicKey,
+          cosigner: signer2.publicKey,
+          vaultState: vaultStatePda,
+          contest: paidContest.contestPda,
+          prizePool: paidContest.prizePoolPda,
+          payoutMint: usdcMint,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .remainingAccounts([
+          { pubkey: user1Pda, isSigner: false, isWritable: true },
+          { pubkey: user1Entry, isSigner: false, isWritable: true },
+          { pubkey: user1UsdcAta, isSigner: false, isWritable: true },
+          { pubkey: user2Pda, isSigner: false, isWritable: true },
+          { pubkey: user2Entry, isSigner: false, isWritable: true },
+          { pubkey: user2UsdcAta, isSigner: false, isWritable: true },
+        ])
+        .signers([signer2])
+        .rpc();
+
+      const contest = await program.account.contest.fetch(
+        paidContest.contestPda
       );
-      const ata = await createAccount(connection, admin.payer, usdcMint, u.publicKey);
-      await mintTo(
+      const user1After = await program.account.userAccount.fetch(user1Pda);
+      const entry = await program.account.contestEntry.fetch(user1Entry);
+      expect(statusName(contest.status)).to.equal("settled");
+      expect(
+        prizePoolBefore - (await tokenAmount(paidContest.prizePoolPda))
+      ).to.equal(amount(40));
+      expect((await tokenAmount(user1UsdcAta)) - user1AtaBefore).to.equal(
+        amount(40)
+      );
+      expect(
+        user1After.totalWon.toNumber() - user1Before.totalWon.toNumber()
+      ).to.equal(amount(40));
+      expect(user1After.wins - user1Before.wins).to.equal(1);
+      expect(user1After.cashes - user1Before.cashes).to.equal(1);
+      expect(statusName(entry.status)).to.equal("won");
+      expect(entry.payout.toNumber()).to.equal(amount(40));
+    });
+
+    it("rejects unsafe settlement variants", async () => {
+      const unlockedContest = await createContest("settle-before-lock", {
+        fees: { 0: amount(1) },
+        prizePool: amount(1),
+        payouts: [amount(1)],
+      });
+      await expectRejected(
+        program.methods
+          .settleContest([])
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: signer2.publicKey,
+            vaultState: vaultStatePda,
+            contest: unlockedContest.contestPda,
+            prizePool: unlockedContest.prizePoolPda,
+            payoutMint: usdcMint,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([signer2])
+          .rpc(),
+        /ContestNotLocked/i
+      );
+
+      const duplicateContest = await createContest("settle-duplicate-entry", {
+        fees: { 0: amount(1) },
+        prizePool: amount(1),
+        payouts: [amount(1)],
+      });
+      await lockContestNow(duplicateContest);
+      await expectRejected(
+        program.methods
+          .settleContest([
+            { wallet: user1.publicKey, entryNum: 0, rank: 1, payout: bn(0) },
+            { wallet: user1.publicKey, entryNum: 0, rank: 2, payout: bn(0) },
+          ])
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: signer2.publicKey,
+            vaultState: vaultStatePda,
+            contest: duplicateContest.contestPda,
+            prizePool: duplicateContest.prizePoolPda,
+            payoutMint: usdcMint,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([signer2])
+          .rpc(),
+        /DuplicateEntry/i
+      );
+
+      const badDestinationContest = await createContest(
+        "settle-bad-destination",
+        {
+          fees: { 0: amount(1) },
+          prizePool: amount(1),
+          payouts: [amount(1)],
+        }
+      );
+      await enterPaid(
+        badDestinationContest,
+        user1,
+        deriveUser(user1.publicKey),
+        user1UsdcAta,
+        usdcMint,
+        usdcOpRevPda,
+        0,
+        0
+      );
+      await lockContestNow(badDestinationContest);
+      await expectRejected(
+        program.methods
+          .settleContest([
+            {
+              wallet: user1.publicKey,
+              entryNum: 0,
+              rank: 1,
+              payout: bn(amount(1)),
+            },
+          ])
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: signer2.publicKey,
+            vaultState: vaultStatePda,
+            contest: badDestinationContest.contestPda,
+            prizePool: badDestinationContest.prizePoolPda,
+            payoutMint: usdcMint,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .remainingAccounts([
+            {
+              pubkey: deriveUser(user1.publicKey),
+              isSigner: false,
+              isWritable: true,
+            },
+            {
+              pubkey: deriveEntry(badDestinationContest.id, user1.publicKey, 0),
+              isSigner: false,
+              isWritable: true,
+            },
+            { pubkey: user2UsdcAta, isSigner: false, isWritable: true },
+          ])
+          .signers([signer2])
+          .rpc(),
+        /InvalidPayoutDestination/i
+      );
+    });
+
+    it("cancels open contests by refunding prize pool while preserving op_rev", async () => {
+      const cancelContest = await createContest("cancel-contest", {
+        fees: { 0: amount(2) },
+        prizePool: amount(8),
+        payouts: [amount(8)],
+      });
+      const adminBefore = await tokenAmount(adminUsdcAta);
+      const opBefore = await tokenAmount(usdcOpRevPda);
+      await enterPaid(
+        cancelContest,
+        user1,
+        deriveUser(user1.publicKey),
+        user1UsdcAta,
+        usdcMint,
+        usdcOpRevPda,
+        0,
+        0
+      );
+
+      await program.methods
+        .cancelContest()
+        .accountsStrict({
+          admin: admin.publicKey,
+          cosigner: signer2.publicKey,
+          vaultState: vaultStatePda,
+          contest: cancelContest.contestPda,
+          prizePool: cancelContest.prizePoolPda,
+          payoutMint: usdcMint,
+          creatorTokenAccount: adminUsdcAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([signer2])
+        .rpc();
+
+      const contest = await program.account.contest.fetch(
+        cancelContest.contestPda
+      );
+      expect(statusName(contest.status)).to.equal("cancelled");
+      expect((await tokenAmount(adminUsdcAta)) - adminBefore).to.equal(
+        amount(8)
+      );
+      expect((await tokenAmount(usdcOpRevPda)) - opBefore).to.equal(amount(2));
+    });
+
+    it("closes finalized contests and dust-sweeps prize pool to USDC op_rev", async () => {
+      const dustContest = await createContest("dust-close-contest", {
+        fees: {},
+        prizePool: 1,
+        payouts: [1],
+      });
+      await lockContestNow(dustContest);
+      await program.methods
+        .settleContest([])
+        .accountsStrict({
+          admin: admin.publicKey,
+          cosigner: signer2.publicKey,
+          vaultState: vaultStatePda,
+          contest: dustContest.contestPda,
+          prizePool: dustContest.prizePoolPda,
+          payoutMint: usdcMint,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([signer2])
+        .rpc();
+
+      const opBefore = await tokenAmount(usdcOpRevPda);
+      await program.methods
+        .closeContest()
+        .accountsStrict({
+          admin: admin.publicKey,
+          vaultState: vaultStatePda,
+          contest: dustContest.contestPda,
+          prizePool: dustContest.prizePoolPda,
+          payoutMint: usdcMint,
+          opRevUsdcAta: usdcOpRevPda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .rpc();
+
+      expect(await connection.getAccountInfo(dustContest.contestPda)).to.equal(
+        null
+      );
+      expect(
+        await connection.getAccountInfo(dustContest.prizePoolPda)
+      ).to.equal(null);
+      expect((await tokenAmount(usdcOpRevPda)) - opBefore).to.equal(1);
+
+      const openContest = await createContest("close-open-reject", {
+        fees: { 0: amount(1) },
+        prizePool: amount(1),
+        payouts: [amount(1)],
+      });
+      await expectRejected(
+        program.methods
+          .closeContest()
+          .accountsStrict({
+            admin: admin.publicKey,
+            vaultState: vaultStatePda,
+            contest: openContest.contestPda,
+            prizePool: openContest.prizePoolPda,
+            payoutMint: usdcMint,
+            opRevUsdcAta: usdcOpRevPda,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .rpc(),
+        /ContestNotSettled/i
+      );
+    });
+
+    it("sweeps operator revenue only to pinned treasury ATA", async () => {
+      await expectRejected(
+        program.methods
+          .sweepOperatorRevenue(bn(0))
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: signer2.publicKey,
+            vaultState: vaultStatePda,
+            currencyMint: usdtMint,
+            opRevAta: usdtOpRevPda,
+            treasuryAta: wrongTreasuryUsdtAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([signer2])
+          .rpc(),
+        /TreasuryAuthorityMismatch/i
+      );
+
+      const treasuryBefore = await tokenAmount(treasuryUsdcAta);
+      const opBefore = await tokenAmount(usdcOpRevPda);
+      expect(opBefore).to.be.greaterThan(0);
+
+      await program.methods
+        .sweepOperatorRevenue(bn(0))
+        .accountsStrict({
+          admin: admin.publicKey,
+          cosigner: signer2.publicKey,
+          vaultState: vaultStatePda,
+          currencyMint: usdcMint,
+          opRevAta: usdcOpRevPda,
+          treasuryAta: treasuryUsdcAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([signer2])
+        .rpc();
+
+      expect(await tokenAmount(usdcOpRevPda)).to.equal(0);
+      expect((await tokenAmount(treasuryUsdcAta)) - treasuryBefore).to.equal(
+        opBefore
+      );
+
+      await expectRejected(
+        program.methods
+          .sweepOperatorRevenue(bn(0))
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: signer2.publicKey,
+            vaultState: vaultStatePda,
+            currencyMint: usdcMint,
+            opRevAta: usdcOpRevPda,
+            treasuryAta: treasuryUsdcAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .signers([signer2])
+          .rpc(),
+        /EmptyRevenueAccount/i
+      );
+
+      const usdtTreasuryBefore = await tokenAmount(treasuryUsdtAta);
+      const usdtOpBefore = await tokenAmount(usdtOpRevPda);
+      await program.methods
+        .sweepOperatorRevenue(bn(amount(3)))
+        .accountsStrict({
+          admin: admin.publicKey,
+          cosigner: signer2.publicKey,
+          vaultState: vaultStatePda,
+          currencyMint: usdtMint,
+          opRevAta: usdtOpRevPda,
+          treasuryAta: treasuryUsdtAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([signer2])
+        .rpc();
+      expect(usdtOpBefore - (await tokenAmount(usdtOpRevPda))).to.equal(
+        amount(3)
+      );
+      expect(
+        (await tokenAmount(treasuryUsdtAta)) - usdtTreasuryBefore
+      ).to.equal(amount(3));
+    });
+
+    it("rejects a full currency registry", async () => {
+      for (let slot = 3; slot < MAX_CURRENCIES; slot++) {
+        const mint = await createMint(
+          connection,
+          admin.payer,
+          admin.publicKey,
+          null,
+          DECIMALS
+        );
+        await program.methods
+          .registerCurrency(1)
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: signer2.publicKey,
+            vaultState: vaultStatePda,
+            mint,
+            opRevAta: deriveOpRev(mint),
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+            rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+          })
+          .signers([signer2])
+          .rpc();
+      }
+
+      const overflowMint = await createMint(
         connection,
         admin.payer,
-        usdcMint,
-        ata,
         admin.publicKey,
-        toTokenAmount(depositDollars + 10)
+        null,
+        DECIMALS
       );
-      const pda = PublicKey.findProgramAddressSync(
-        [Buffer.from("user"), u.publicKey.toBuffer()],
-        program.programId
-      )[0];
-
-      await program.methods
-        .createUserAccount(u.publicKey, makeUsername(name))
-        .accountsStrict({
-          payer: admin.publicKey,
-          userAccount: pda,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc();
-
-      await program.methods
-        .deposit(new anchor.BN(toTokenAmount(depositDollars)))
-        .accountsStrict({
-          user: u.publicKey,
-          userAccount: pda,
-          vaultState: vaultStatePda,
-          mint: usdcMint,
-          userTokenAccount: ata,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .signers([u])
-        .rpc();
-
-      return { user: u, ata, pda };
-    };
-
-    const withdraw = async (
-      u: Keypair,
-      ata: PublicKey,
-      pda: PublicKey,
-      dollars: number
-    ) => {
-      await program.methods
-        .withdraw(new anchor.BN(toTokenAmount(dollars)))
-        .accountsStrict({
-          user: u.publicKey,
-          userAccount: pda,
-          vaultState: vaultStatePda,
-          mint: usdcMint,
-          userTokenAccount: ata,
-          vaultTokenAccount: vaultUsdcPda,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .signers([u])
-        .rpc();
-    };
-
-    before(async () => {
-      const setup = await setupFundedUser("cap_user", 300);
-      capUser = setup.user;
-      capUserUsdc = setup.ata;
-      capUserPda = setup.pda;
+      await expectRejected(
+        program.methods
+          .registerCurrency(1)
+          .accountsStrict({
+            admin: admin.publicKey,
+            cosigner: signer2.publicKey,
+            vaultState: vaultStatePda,
+            mint: overflowMint,
+            opRevAta: deriveOpRev(overflowMint),
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+            rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+          })
+          .signers([signer2])
+          .rpc(),
+        /CurrencyRegistryFull/i
+      );
     });
-
-    it("$99 withdraw succeeds (first call initializes window)", async () => {
-      const before = await program.account.userAccount.fetch(capUserPda);
-      expect(before.dailyWindowStart.toNumber()).to.equal(0);
-
-      await withdraw(capUser, capUserUsdc, capUserPda, 99);
-
-      const after = await program.account.userAccount.fetch(capUserPda);
-      expect(after.dailyWithdrawn.toNumber()).to.equal(toTokenAmount(99));
-      // Window initialized to "now" (some non-zero unix timestamp).
-      expect(after.dailyWindowStart.toNumber()).to.be.greaterThan(0);
-    });
-
-    it("$1 more brings cumulative to exactly $100 (still under cap)", async () => {
-      await withdraw(capUser, capUserUsdc, capUserPda, 1);
-
-      const user = await program.account.userAccount.fetch(capUserPda);
-      expect(user.dailyWithdrawn.toNumber()).to.equal(toTokenAmount(100));
-    });
-
-    it("rejects $1 more (would push cumulative to $101 — WithdrawDailyCapExceeded)", async () => {
-      try {
-        await withdraw(capUser, capUserUsdc, capUserPda, 1);
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("WithdrawDailyCapExceeded");
-      }
-
-      // Sanity: cap counter unchanged after the failed attempt.
-      const user = await program.account.userAccount.fetch(capUserPda);
-      expect(user.dailyWithdrawn.toNumber()).to.equal(toTokenAmount(100));
-    });
-
-    it("rejects a single $101 withdraw on a fresh user (atomic over-cap)", async () => {
-      const { user, ata, pda } = await setupFundedUser("over_cap", 200);
-
-      try {
-        await withdraw(user, ata, pda, 101);
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("WithdrawDailyCapExceeded");
-      }
-
-      // Balance + counter unchanged after rejection — cap fires before debit.
-      const u = await program.account.userAccount.fetch(pda);
-      expect(u.balance.toNumber()).to.equal(toTokenAmount(200));
-      expect(u.dailyWithdrawn.toNumber()).to.equal(0);
-      expect(u.dailyWindowStart.toNumber()).to.equal(0);
-    });
-
-    it("InsufficientBalance fires before WithdrawDailyCapExceeded", async () => {
-      // A fresh user with $50 trying to withdraw $80 — balance check runs
-      // first (the cap check would otherwise let it through since $80 < $100).
-      const { user, ata, pda } = await setupFundedUser("low_bal", 50);
-
-      try {
-        await withdraw(user, ata, pda, 80);
-        expect.fail("Should have thrown");
-      } catch (err) {
-        expect(err.toString()).to.contain("InsufficientBalance");
-      }
-    });
-
-    // 24h rollover test: the window-reset path (elapsed >= 86_400 seconds)
-    // requires manipulating the cluster clock, which solana-test-validator
-    // doesn't expose out of the box. Verified manually on devnet by
-    // setting daily_window_start to (now - 86_401) via a one-shot test
-    // helper not committed here. Documented in CHANGELOG.
   });
 });

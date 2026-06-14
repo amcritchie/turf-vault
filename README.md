@@ -203,10 +203,13 @@ anchor build
 anchor test
 ```
 
-Tests run against a local validator. The TypeScript suite is being realigned from the old deposit/withdraw contract shape to the current self-custody instruction surface; check the latest test status before treating it as launch evidence.
+Tests run against a local validator. The TypeScript suite is aligned to the
+current self-custody instruction surface and no longer covers retired
+deposit/withdraw balance flows.
 
-Use [`docs/VERIFICATION_MATRIX.md`](docs/VERIFICATION_MATRIX.md) as the target
-coverage map while realigning the suite.
+Use [`docs/VERIFICATION_MATRIX.md`](docs/VERIFICATION_MATRIX.md) as the coverage
+map and latest local proof record. If the default validator port is occupied,
+use the alternate-port direct path in [`RUNBOOK.md`](RUNBOOK.md).
 
 ### Deploy
 

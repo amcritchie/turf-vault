@@ -51,6 +51,19 @@ ANCHOR_WALLET=~/.config/solana/id.json \
 yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts
 ```
 
+**Default validator port is occupied**
+- Diagnosis: `anchor test` reports `Your configured rpc port: 8899 is already in use`, or another local service owns the default Solana RPC/WebSocket ports.
+- Fix: run an isolated validator on alternate ports, deploy the already-built program to it, then run the direct suite against that URL:
+```bash
+solana-test-validator --reset --rpc-port 8898 --faucet-port 9901
+
+anchor deploy --provider.cluster http://127.0.0.1:8898
+
+ANCHOR_PROVIDER_URL=http://127.0.0.1:8898 \
+ANCHOR_WALLET=/Users/alex/.config/solana/id.json \
+yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts
+```
+
 **Local validator not running**
 - Diagnosis: Tests fail with `Connection refused` to `127.0.0.1:8899`.
 - Fix: `anchor test` starts a validator automatically, but direct test runs need a manual one. Start it: `solana-test-validator` (runs in foreground). To reset state: `solana-test-validator --reset`. The `test-ledger/` directory stores validator state.

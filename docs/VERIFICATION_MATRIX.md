@@ -5,8 +5,9 @@ surface. It is not a replacement for source review, and it is not deployment
 identity. Live program IDs, signer set, IDL hash, and upgrade authority live in
 [`CURRENT_DEPLOYMENT.md`](CURRENT_DEPLOYMENT.md).
 
-The existing TypeScript suite still includes retired v0.15 deposit/withdraw
-cases. Treat it as partial evidence until the suite is realigned to this matrix.
+The TypeScript suite at `tests/turf_vault.ts` is organized around this matrix
+and no longer includes retired v0.15 `deposit`, `withdraw`, or daily-withdraw-cap
+cases.
 
 ## Baseline Commands
 
@@ -18,6 +19,19 @@ anchor test
 If `anchor test` cannot inherit Node/Yarn, use the direct test path from
 [`../RUNBOOK.md`](../RUNBOOK.md). After any source change, regenerate the IDL and
 re-pin Turf Monster from the freshly built file, not from `anchor idl fetch`.
+
+Latest local proof, 2026-06-14:
+
+```bash
+anchor build
+solana-test-validator --reset --rpc-port 8898 --faucet-port 9901
+anchor deploy --provider.cluster http://127.0.0.1:8898
+ANCHOR_PROVIDER_URL=http://127.0.0.1:8898 \
+  ANCHOR_WALLET=/Users/alex/.config/solana/id.json \
+  yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts
+```
+
+Result: `23 passing`.
 
 ## Instruction Matrix
 
@@ -57,8 +71,9 @@ re-pin Turf Monster from the freshly built file, not from `anchor idl fetch`.
 
 ## Known Gaps
 
-- The TypeScript suite should be rewritten around this 22-instruction matrix and
-  should delete retired `deposit`, `withdraw`, and daily-withdraw-cap cases.
+- Local TypeScript tests run the default localnet/devnet build. The
+  mainnet-only `INIT_AUTHORITY`, canonical USDC, and canonical USDT checks are
+  feature-gated and should be proven as part of mainnet build/deploy review.
 - Devnet and mainnet verification are distinct: devnet may run v0.25 while
   mainnet remains v0.24 until the next upgrade window.
 - Any signer or upgrade-authority change must update `CURRENT_DEPLOYMENT.md` in
