@@ -43,8 +43,8 @@ VaultState (PDA: "vault")
     ├── prize_pool, entry_fee_by_currency[16], entry_fees[16]
     ├── max_entries, current_entries, season_id
     ├── payout_amounts (Vec<u64>, max 10 ranks)
-    ├── status: Open → Locked → Settled/Cancelled
-    ├── lock_timestamp, conclusion_timestamp
+    ├── status: Open → Settled/Cancelled
+    ├── lock_timestamp, conclusion_timestamp (lock is derived from time)
     │
     └── ContestEntry (PDA: "entry" + contest_id + wallet + entry_num)
         ├── status: Active → Won/Lost, currency_idx
@@ -137,7 +137,7 @@ Settlement accounts are passed as `remaining_accounts` — triples of `[user_acc
 | `entry_fees` | [u64; 16] | Per-currency operator-revenue tally |
 | `max_entries` | u32 | Maximum entries allowed |
 | `current_entries` | u32 | Current entry count |
-| `status` | ContestStatus | Open / Locked / Settled |
+| `status` | ContestStatus | Open / Settled / Cancelled. `Locked` remains in the enum only for discriminant compatibility; no current instruction sets it. |
 | `payout_amounts` | Vec\<u64\> | USDC amount per rank (max 10, must sum to `prize_pool`) |
 | `admin` | Pubkey | Payer pubkey (created the contest) |
 | `creator` | Pubkey | Wallet that funded the `prize_pool` USDC |
