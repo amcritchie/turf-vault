@@ -50,7 +50,13 @@ const { execFileSync } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..");
 const AGENT_VAULT_EXPANSION = "${MCR_OP_VAULT_AGENT:-agents-studio}";
-const SKIP_DIRS = new Set(["node_modules", "target", ".git", ".worktrees", "dist"]);
+const SKIP_DIRS = new Set([
+  "node_modules",
+  "target",
+  ".git",
+  ".worktrees",
+  "dist",
+]);
 const PROSE = /\.(md|mdx)$/i;
 
 // A reference runs from `op://` to the first shell/markdown terminator. Fields
@@ -61,7 +67,8 @@ const TERMINATORS = new Set(["`", "'", '"', ")", "\n"]);
 function proseFiles(dir, out = []) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
-      if (!SKIP_DIRS.has(entry.name)) proseFiles(path.join(dir, entry.name), out);
+      if (!SKIP_DIRS.has(entry.name))
+        proseFiles(path.join(dir, entry.name), out);
     } else if (PROSE.test(entry.name)) {
       out.push(path.join(dir, entry.name));
     }
@@ -102,7 +109,9 @@ function main() {
 
     if (vault !== AGENT_VAULT_EXPANSION) {
       problems.push(
-        `${r.file}:${r.line} names the vault literally as ${JSON.stringify(vault)}. ` +
+        `${r.file}:${r.line} names the vault literally as ${JSON.stringify(
+          vault
+        )}. ` +
           `Use op://${AGENT_VAULT_EXPANSION}/... — a literal breaks fleet-wide on the next ` +
           `rename, exactly as "agents" did on 2026-08-28.`
       );
@@ -123,24 +132,32 @@ function main() {
     for (const r of refs) {
       const resolved = r.ref.replace(AGENT_VAULT_EXPANSION, vault);
       try {
-        execFileSync("op", ["read", resolved], { stdio: ["ignore", "ignore", "pipe"] });
+        execFileSync("op", ["read", resolved], {
+          stdio: ["ignore", "ignore", "pipe"],
+        });
         console.log(`  ok   ${r.file}:${r.line}  ${resolved}`);
       } catch (error) {
         const detail = (error.stderr || "").toString().trim().split("\n")[0];
-        problems.push(`${r.file}:${r.line} does not resolve: ${resolved}\n         ${detail}`);
+        problems.push(
+          `${r.file}:${r.line} does not resolve: ${resolved}\n         ${detail}`
+        );
       }
     }
   }
 
   if (problems.length > 0) {
-    console.error(`check-doc-op-refs: ${problems.length} problem(s) in ${refs.length} reference(s)\n`);
+    console.error(
+      `check-doc-op-refs: ${problems.length} problem(s) in ${refs.length} reference(s)\n`
+    );
     for (const p of problems) console.error(`  - ${p}`);
     process.exit(1);
   }
 
   console.log(
     `check-doc-op-refs: ${refs.length} op:// reference(s) OK` +
-      (live ? " (resolved against 1Password)" : " (static; add --live to resolve them)")
+      (live
+        ? " (resolved against 1Password)"
+        : " (static; add --live to resolve them)")
   );
 }
 
