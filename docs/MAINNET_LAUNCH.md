@@ -49,7 +49,8 @@ Complete every box before §3. Each line should be confirmable by command.
       against localnet. `cd ~/projects/turf-monster && bin/rails test`
       green.
 - [ ] **Mainnet RPC URL** stored in 1Password at `agent.helius` →
-      "Mainnet RPC URL". Verify with `op read 'op://agents/agent.helius/Mainnet RPC URL'`.
+      "Mainnet RPC URL". Verify with
+      `op read "op://${MCR_OP_VAULT_AGENT:-agents-studio}/agent.helius/Mainnet RPC URL"`.
 - [ ] **Squads mainnet vault** stood up (§2). Members confirmed, threshold
       verified, vault PDA derived.
 - [ ] **Operator wallets ready to sign.** Alex Phantom (`7ZDJp7FU…`) loaded
@@ -253,7 +254,7 @@ heroku addons:create heroku-postgresql:essential-0 -a turf-monster-mainnet
 heroku addons:create heroku-redis:mini             -a turf-monster-mainnet
 
 # 3. Set env vars (NEW values — do NOT copy from devnet prod).
-MAINNET_URL=$(op read 'op://agents/agent.helius/Mainnet RPC URL')
+MAINNET_URL=$(op read "op://${MCR_OP_VAULT_AGENT:-agents-studio}/agent.helius/Mainnet RPC URL")
 heroku config:set \
   RAILS_MASTER_KEY=$(cat ~/projects/turf-monster/config/master.key) \
   SECRET_KEY_BASE=$(bin/rails secret) \
@@ -267,7 +268,7 @@ heroku config:set \
   STRIPE_WEBHOOK_SECRET=<MAINNET-LIVE-WEBHOOK-SECRET> \
   GOOGLE_CLIENT_ID=<NEW-OR-RE-USED> \
   GOOGLE_CLIENT_SECRET=<MATCHING> \
-  RESEND_API_KEY=$(op read 'op://agents/agent.resend/api-key') \
+  RESEND_API_KEY=$(op read "op://${MCR_OP_VAULT_AGENT:-agents-studio}/agent.resend/api key") \
   MAILER_FROM=alex@turfmonster.media \
   MANAGED_WALLET_ENCRYPTION_KEY=$(bin/rails secret) \
   AWS_ACCESS_KEY_ID=<from-1pass> \
