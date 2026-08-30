@@ -220,7 +220,7 @@ and on every push to `main`, `release` and `accepted`:
 |-----|------|---------|
 | `program` | `cargo check --workspace --all-targets --locked` | the program (and every `#[derive(Accounts)]` expansion) no longer compiles, or `Cargo.lock` is out of sync |
 | `program` | `cargo clippy -- -D clippy::correctness` | code clippy classes as outright wrong |
-| `guards` | `npm run check:doc-op-refs` | an `op://` reference in this repo's prose has gone stale |
+| `guards` | `npm run check:doc-op-refs` | a 1Password vault reference in this repo's prose has gone stale |
 
 CI is **build-and-check only** — it never contacts a Solana cluster, holds a
 keypair, or spends SOL.
