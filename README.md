@@ -211,6 +211,38 @@ Use [`docs/VERIFICATION_MATRIX.md`](docs/VERIFICATION_MATRIX.md) as the coverage
 map and latest local proof record. If the default validator port is occupied,
 use the alternate-port direct path in [`RUNBOOK.md`](RUNBOOK.md).
 
+### Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every pull request
+and on every push to `main`, `release` and `accepted`:
+
+| Job | Runs | Catches |
+|-----|------|---------|
+| `program` | `cargo check --workspace --all-targets --locked` | the program (and every `#[derive(Accounts)]` expansion) no longer compiles, or `Cargo.lock` is out of sync |
+| `program` | `cargo clippy -- -D clippy::correctness` | code clippy classes as outright wrong |
+| `guards` | `npm run check:doc-op-refs` | an `op://` reference in this repo's prose has gone stale |
+
+CI is **build-and-check only** — it never contacts a Solana cluster, holds a
+keypair, or spends SOL.
+
+Deliberately NOT in CI yet, each because making it green means changing the
+program or the deploy scripts rather than adding a workflow:
+
+- **`anchor build`** — an SBF build needs the Solana platform-tools and
+  `anchor-cli` installed on the runner, which is the dominant cost and the
+  fragile part. `cargo check` type-checks the same source. The SBF artifact is
+  verified by hand at rollout instead, via
+  [`docs/VERIFICATION_MATRIX.md`](docs/VERIFICATION_MATRIX.md).
+- **`anchor test`** — spins a local validator; too heavy for a per-push lane.
+- **`cargo fmt --check`** — the tree is not rustfmt-clean; making it so rewrites
+  ~947 lines across all 25 program files and destroys `git blame` on a program
+  that custodies real assets.
+- **`cargo clippy -D warnings`** — 4 pre-existing `style`/`complexity` findings,
+  two of which need real logic changes. They still print as warnings in the
+  `program` job, so the debt stays visible.
+- **`npm run lint`** (Prettier) — two scripts are unformatted, and reformatting
+  `scripts/squad-upgrade.js` rewrites ~207 lines of the mainnet upgrade path.
+
 ### Deploy
 
 The program upgrade authority is a Squads V4 2-of-3 multisig (OPSEC-002, 2026-05-19), so **`anchor deploy` is not the upgrade path for an existing deployed program**. Upgrades go through the Squad via `scripts/squad-upgrade.js`; see [`docs/CURRENT_DEPLOYMENT.md`](docs/CURRENT_DEPLOYMENT.md) for the current authority and upgrade rule.

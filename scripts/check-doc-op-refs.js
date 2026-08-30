@@ -39,9 +39,12 @@
  *   node scripts/check-doc-op-refs.js
  *   node scripts/check-doc-op-refs.js --live
  *
- * NOTE FOR WHOEVER ADDS CI HERE: turf-vault has no GitHub Actions workflow at
- * all, so nothing runs this on a push. It is an on-demand guard and a release
- * step, not a lane. Wire it into the first workflow this repo grows.
+ * IT IS NOW A LANE. .github/workflows/ci.yml (the repo's first workflow, added
+ * 2026-08-30) runs `npm run check:doc-op-refs` in its `guards` job on every pull
+ * request and every push to main/release/accepted. STATIC MODE ONLY there: `--live`
+ * needs a real 1Password credential, which CI does not have and should not be given.
+ * So a stale vault name is caught on a push; a wrong FIELD name still needs a
+ * `--live` run by hand, which is a release step.
  */
 
 const fs = require("fs");
