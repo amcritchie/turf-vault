@@ -2,7 +2,8 @@
   "license": "ISC",
   "scripts": {
     "lint:fix": "prettier */*.js \"*/**/*{.js,.ts}\" -w",
-    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check"
+    "lint": "prettier */*.js \"*/**/*{.js,.ts}\" --check",
+    "check:doc-op-refs": "node scripts/check-doc-op-refs.js"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
