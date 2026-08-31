@@ -1,0 +1,145 @@
+# turf-vault's FIRST CI. Until this file existed the repo had no workflows at all,
+# so every PR reported "no checks" — which reads identically to "checks passed" to
+# anything that does not look closely, and identically to "checks have not started"
+# to anything that does. `bin/release prepare` refused to promote the repo for
+# exactly that reason (2026-08-29), holding /tasks/mainnet-launch-doc-vault-rename
+# out of four consecutive release sweeps:
+#
+#   promote refused — turf-vault (suite workflow "CI") cannot certify `accepted`.
+#
+# THE NAME AND THE TRIGGER ARE LOAD-BEARING, not decoration. Release::AcceptedCertification
+# resolves an app repo's suite workflow to the literal name "CI" (DEFAULT_SUITE_WORKFLOW)
+# and matches it by the workflow's `name:` key, not by filename — so renaming this file is
+# safe and renaming the `name:` below silently re-blinds the guard.
+name: CI
+
+on:
+  pull_request:
+  # `accepted` IS THE POINT OF THIS FILE. Review merges approved PRs onto `accepted`,
+  # producing a combination of changes that — individually green — no run has ever
+  # executed together, and that is the exact tree `bin/release prepare` promotes onto
+  # `release`. Without a push trigger here GitHub never builds that rung, the sweep's
+  # RED guard passes over the repo WITHOUT EVER HAVING BEEN CAPABLE OF FAILING, and
+  # uncertified program code rides to `release`.
+  #
+  # `main` and `release` are here for the same reason they are in mcritchie-studio's
+  # ci.yml: each is a shippable tip, and every shippable tip earns its own clean-env
+  # verdict.
+  #
+  # NO `paths:` / `paths-ignore:` FILTER, deliberately. A path filter is the quieter
+  # second way to go blind: it suppresses the RUN, so there are no jobs to skip and no
+  # checks to redden, and a docs-only merge onto `accepted` simply gets no verdict —
+  # while `branches: [main, release, accepted]` still reads correct to anyone auditing
+  # it. Release::AcceptedCertification::PATH_FILTER_KEYS refuses such a workflow, and
+  # it is right to.
+  push:
+    branches: [main, release, accepted]
+
+# NO `concurrency:` BLOCK — deliberately, and for the reason mcritchie-studio's ci.yml
+# records: a cancelled run carries the conclusion `cancelled`, CiStatus folds
+# `cancelled` as RED, and every reader of a branch's health is SHA-addressed. A run
+# superseded by a newer push is then indistinguishable from a genuine failure, and the
+# sweep's own `accepted` guard would refuse to promote a perfectly healthy branch.
+# Cheaper CI is not worth a gate that cries wolf.
+
+permissions:
+  contents: read
+
+jobs:
+  # THE PROGRAM LANE — does the Anchor program still compile, and is any of it
+  # outright wrong?
+  program:
+    name: program
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      # NO TOOLCHAIN ACTION. `rust-toolchain.toml` pins channel 1.89.0 with rustfmt and
+      # clippy, and the runner's preinstalled rustup honours that file on the first
+      # cargo invocation. A `dtolnay/rust-toolchain@stable` step would install a SECOND
+      # toolchain and quietly disagree with the pin the deploy runbook builds against.
+      - name: Show toolchain
+        run: |
+          rustup show active-toolchain
+          cargo --version
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # THE SUBSTANTIVE GATE. This type-checks the whole workspace including every
+      # `#[derive(Accounts)]` expansion — the account structs, the constraint
+      # attributes, the instruction signatures and the PDA seed types — which is where
+      # a broken change to this program actually shows up.
+      #
+      # `--locked` additionally refuses a Cargo.lock that does not match Cargo.toml, so
+      # a dependency bump cannot land without its lockfile.
+      #
+      # WHY `cargo check` AND NOT `anchor build` — a real trade, measured, not assumed.
+      # `anchor build` compiles for the SBF target and emits the IDL; it succeeds here
+      # in ~57s of compute on a machine that ALREADY has the Solana platform-tools and
+      # anchor-cli installed. On a runner neither is present, and installing them
+      # (avm building anchor-cli from source, plus the platform-tools blob that
+      # `cargo build-sbf` fetches on first use) is the dominant cost and the fragile
+      # part — no workflow anywhere in this ecosystem installs that toolchain today, so
+      # there is no proven pattern to lean on. A flaky heavyweight lane here would
+      # redden `accepted` for toolchain reasons and re-block the very sweep this file
+      # exists to unblock.
+      #
+      # What that trade gives up is honest and small: SBF-target-specific failures
+      # (stack-frame limits and the like) that a host-target check cannot see. Those are
+      # already caught before they can matter — the program is deployed by hand through
+      # scripts/squad-upgrade.js against the Squads 2-of-3 vault, and docs/VERIFICATION_MATRIX.md
+      # gates that rollout. If an SBF build is ever wanted in CI, the right home is a
+      # scheduled/dispatch lane of its own, not this gate.
+      - name: cargo check
+        run: cargo check --workspace --all-targets --locked
+
+      # CLIPPY, SCOPED TO `correctness` — the group clippy documents as "code that is
+      # outright wrong or useless". It is GREEN on this tree today and can fail on a
+      # real regression tomorrow, which is the whole test of whether a lane is worth
+      # having.
+      #
+      # IT IS NOT `-D warnings`, AND THAT IS A DELIBERATE, TEMPORARY LINE. This tree
+      # carries 4 pre-existing findings in the `style`/`complexity` groups
+      # (a manual `RangeInclusive::contains`, a `needless_range_loop` over
+      # `entry_fee_by_currency`, and two `too_many_arguments` on instruction handlers,
+      # which is close to inherent for Anchor). Clearing them means editing the logic of
+      # a program that custodies real assets on mainnet — work that needs its own task
+      # and its own devnet run, NOT a drive-by in the PR that introduces CI. They still
+      # PRINT as warnings in this job's log rather than being silenced, so the debt stays
+      # visible. Tighten to `-D warnings` once they are cleared.
+      - name: cargo clippy (correctness)
+        run: cargo clippy --workspace --all-targets --locked -- -D clippy::correctness
+
+  # THE GUARD LANE — the repo's own executable-prose check.
+  guards:
+    name: guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # NO `yarn install` — this guard is pure Node stdlib by design, so the lane needs
+      # no dependency tree, no lockfile resolution and no network beyond the runtime
+      # itself. Invoked through the package.json script rather than by path so that
+      # package.json stays the single declaration of what this check IS.
+      #
+      # STATIC MODE ONLY. `--live` resolves each reference through the real `op`, which
+      # needs a 1Password service-account credential this job does not have and must not
+      # be given: CI has no business holding a vault token, and the shared daily request
+      # cap is a real, account-wide resource. The static pass is what catches the failure
+      # this guard was written for (a hardcoded vault name, and shell expansion trapped
+      # inside single quotes).
+      - name: check doc op:// references
+        run: npm run check:doc-op-refs
