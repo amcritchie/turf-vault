@@ -287,9 +287,12 @@ heroku run 'bin/rails runner "puts Solana::Vault.new.read_vault_state.inspect"' 
 > authority. The vault's **signer set** is three individual wallets. Different
 > authority, different key material, different transaction.
 >
-> **So a rotation today needs a script that does not exist yet.** `scripts/` holds
-> only `initialize-mainnet.js` and `squad-upgrade.js`; neither builds
-> `update_signers`. Model it on `initialize-mainnet.js` and follow §5's pattern —
+> **So a rotation today needs a script that does not exist yet.** The only
+> chain-operation scripts in `scripts/` are `initialize-mainnet.js` and
+> `squad-upgrade.js` — the rest of the directory is `squad.json` (the config both
+> read, and the one §4/§5 have you edit) and `check-doc-op-refs.js` (the docs
+> guard CI runs). Neither script builds `update_signers`. Model it on
+> `initialize-mainnet.js` and follow §5's pattern —
 > each cosigner's Phantom key exported to a temporary CLI keypair, both partial
 > signatures collected in one sitting, then submit. **Budget that work into the
 > rotation window; do not discover it there.**
