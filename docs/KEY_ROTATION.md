@@ -269,6 +269,40 @@ heroku run 'bin/rails runner "puts Solana::Vault.new.read_vault_state.inspect"' 
 > and Mason present), not just one — a `[survivor, junk, junk]` set would brick
 > all governance even though it superficially "kept a known-good key."
 
+> **WHO BUILDS AND COLLECTS THE TWO SIGNATURES — recorded 2026-09-04, because
+> nothing here said.** The rule above says a rotation *is* a 2-of-3 tx; it never
+> said what composes it or gathers the signatures.
+>
+> **There was one built tool, and it is gone.** McRitchie Studio's admin signing
+> console composed the instruction server-side and let each signer approve in
+> their own Phantom, anchored on a durable nonce so a half-signed transaction did
+> not expire between signers. It was **deleted on 2026-09-04**
+> (`/tasks/retire-signing-console`): Turf Monster is the hub for all Solana/web3
+> logic, so the hub keeps none. Nothing in this repo ever referenced it, so
+> nothing here broke — but it was the only tool that did this, and a reader who
+> finds it in an older audit should know it is not the path.
+>
+> **Squads does not cover this.** The Squads V4 vault PDA
+> (`BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC`) holds the program's **upgrade**
+> authority. The vault's **signer set** is three individual wallets. Different
+> authority, different key material, different transaction.
+>
+> **So a rotation today needs a script that does not exist yet.** `scripts/` holds
+> only `initialize-mainnet.js` and `squad-upgrade.js`; neither builds
+> `update_signers`. Model it on `initialize-mainnet.js` and follow §5's pattern —
+> each cosigner's Phantom key exported to a temporary CLI keypair, both partial
+> signatures collected in one sitting, then submit. **Budget that work into the
+> rotation window; do not discover it there.**
+>
+> **Its cost, stated plainly:** the keys touch disk. That is precisely the
+> property the console existed to avoid, and it was traded knowingly. Treat every
+> temp keypair as burned — 1Password to `/tmp`, shredded with the rotation, never
+> reused. If browser coordination is wanted instead, **build it in turf-monster**
+> (the web3 app, per `app-templates.md` in mcritchie-studio). That is **not
+> filed** and this note is not a request to file it: the console served zero
+> production signing requests in its lifetime, so the tool is worth building when
+> a rotation is actually scheduled — not before.
+
 ---
 
 ## §6. Re-pin IDL + re-point turf-monster-mainnet env  *(operator)*
