@@ -328,12 +328,16 @@ heroku run 'bin/rails runner "puts Solana::Vault.new.read_vault_state.inspect"' 
 > no single admin here, only two current signers.
 >
 > **2-of-3 is structural, not configured.** `validate_multisig` never reads
-> `VaultState.threshold`. That field is written once by `initialize`
-> (`initialize.rs:112` validates 1-3, `:142` stores it) and read by no
-> authorization path in the program. The "2" is the function's arity plus its
-> distinctness test; the "3" is `signers: [Pubkey; 3]`. Setting `threshold` to
-> anything else would change nothing, and `update_signers` does not touch it
-> (`update_signers.rs:67-70`).
+> `VaultState.threshold` — and neither does anything else that authorizes. The
+> field's only reads in the whole program are in `initialize.rs`, which
+> validates it 1-3 (`:112`), stores it (`:142`) and logs it (`:177`); no
+> instruction consults it afterwards. The "2" is the function's arity plus its
+> distinctness test, the "3" is `signers: [Pubkey; 3]`, and the same
+> `validate_multisig` gates every other 2-of-3 instruction in the program
+> (`settle_contest`, `cancel_contest`, `pause`, `sweep_operator_revenue` and the
+> rest). So setting `threshold` to anything else would change nothing.
+> `update_signers` also does not write it: its handler's only state write is
+> `vault.signers = new_signers` (`update_signers.rs:109-114`).
 >
 > **The delta is FIVE changes to `initialize-mainnet.js`, not one line.** The
 > signing MECHANISM is one line and it is correct: add `.signers([cosigner])` to
