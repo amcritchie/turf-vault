@@ -293,9 +293,12 @@ heroku run 'bin/rails runner "puts Solana::Vault.new.read_vault_state.inspect"' 
 > entirely, changed by a different transaction: `update_signers` against
 > `VaultState`, never a Squads proposal.
 >
-> **But it is the same three keys.** The Squads membership and the VaultState
-> signer set are both `8K81…` (Alex Bot), `7ZDJ…` (Alex), `Cyt…` (Mason) —
-> `scripts/squad.json` and `CURRENT_DEPLOYMENT.md` agree. Two authorities, two
+> **But it is the same three keys — verify that before you rely on it.** The
+> Squads membership is `8K81…` (Alex Bot), `7ZDJ…` (Alex), `Cyt…` (Mason)
+> (`scripts/squad.json` `members`). The mainnet **VaultState** signer set is
+> **not recorded in this repo**: `CURRENT_DEPLOYMENT.md`'s only signer rows sit
+> under `## Devnet`, and its `## Mainnet` table has none. Read it on-chain with
+> the §5 read-back above before composing the rotation. Two authorities, two
 > transactions, **one overlapping membership**: a compromised key sits in BOTH,
 > which is why §0 calls Alex Bot "a 1-of-3 vault signer **and** a member of the
 > Squads upgrade-authority multisig," and why **§7 exists**. Rotating the vault
