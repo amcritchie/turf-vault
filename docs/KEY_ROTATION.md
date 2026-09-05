@@ -277,29 +277,59 @@ heroku run 'bin/rails runner "puts Solana::Vault.new.read_vault_state.inspect"' 
 > console composed the instruction server-side and let each signer approve in
 > their own Phantom, anchored on a durable nonce so a half-signed transaction did
 > not expire between signers. It was **deleted on 2026-09-04**
-> (`/tasks/retire-signing-console`): Turf Monster is the hub for all Solana/web3
-> logic, so the hub keeps none. Nothing in this repo ever referenced it, so
-> nothing here broke — but it was the only tool that did this, and a reader who
-> finds it in an older audit should know it is not the path.
+> (`/tasks/retire-signing-console`, merged to `accepted`; it reaches production
+> with the next release): Turf Monster is the hub for all Solana/web3 logic, so
+> the hub keeps none. Nothing in this repo ever referenced it, so nothing here
+> broke — but it was the only tool that did this, and a reader who finds it in an
+> older audit should know it is not the path.
 >
-> **Squads does not cover this.** The Squads V4 vault PDA
-> (`BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC`) holds the program's **upgrade**
-> authority. The vault's **signer set** is three individual wallets. Different
-> authority, different key material, different transaction.
+> **Squads does not cover this.** A Squads V4 vault PDA holds the program's
+> **upgrade** authority — on **mainnet**, which this plan is written for, that is
+> `Bk9sS7iiSRL18vuo2KVzkeGw7EekKqxMCjrdoyGGdJm` (`scripts/squad.json`, the live
+> top-level block). `BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC` is the
+> **devnet** vault PDA (`CURRENT_DEPLOYMENT.md` § Devnet, and squad.json's
+> `_devnet_reference`); the `Identities` section above already lists it as the
+> devnet substitution. The vault's **signer set** is a different authority
+> entirely, changed by a different transaction: `update_signers` against
+> `VaultState`, never a Squads proposal.
+>
+> **But it is the same three keys.** The Squads membership and the VaultState
+> signer set are both `8K81…` (Alex Bot), `7ZDJ…` (Alex), `Cyt…` (Mason) —
+> `scripts/squad.json` and `CURRENT_DEPLOYMENT.md` agree. Two authorities, two
+> transactions, **one overlapping membership**: a compromised key sits in BOTH,
+> which is why §0 calls Alex Bot "a 1-of-3 vault signer **and** a member of the
+> Squads upgrade-authority multisig," and why **§7 exists**. Rotating the vault
+> signer set does **not** evict that key from Squads. A real compromise needs
+> both moves.
 >
 > **So a rotation today needs a script that does not exist yet.** The only
 > chain-operation scripts in `scripts/` are `initialize-mainnet.js` and
 > `squad-upgrade.js` — the rest of the directory is `squad.json` (the config both
 > read, and the one §4/§5 have you edit) and `check-doc-op-refs.js` (the docs
-> guard CI runs). Neither script builds `update_signers`. Model it on
-> `initialize-mainnet.js` and follow §5's pattern —
-> each cosigner's Phantom key exported to a temporary CLI keypair, both partial
-> signatures collected in one sitting, then submit. **Budget that work into the
+> guard CI runs). Neither builds `update_signers`.
+>
+> **The delta is one line.** `update_signers` wants ONE transaction carrying TWO
+> `Signer` accounts, `admin` and `cosigner`
+> (`programs/turf_vault/src/instructions/update_signers.rs`). So model the script
+> on `initialize-mainnet.js` and add `.signers([cosigner])` to its `.rpc()` call —
+> that script builds a single `anchor.Wallet` provider and passes no signers
+> array, and that is the whole gap. Do **not** model it on §5: §5 is a
+> single-signer `INIT_AUTHORITY` flow with no partial-signature step in it. With
+> two LOCAL keypairs there are no partial signatures to collect and no expiry
+> window to race — the durable nonce the console needed was needed only because
+> its signers were REMOTE, in separate browsers. **Budget the work into the
 > rotation window; do not discover it there.**
 >
-> **Its cost, stated plainly:** the keys touch disk. That is precisely the
-> property the console existed to avoid, and it was traded knowingly. Treat every
-> temp keypair as burned — 1Password to `/tmp`, shredded with the rotation, never
+> **Its cost, and how to keep it small.** Both keys leave Phantom, which is
+> precisely the property the console existed to avoid; that is traded knowingly.
+> But do not reach for keypair FILES by default. `squad-upgrade.js` — this repo's
+> other two-signature script — loads both signing keys from base58 env vars
+> (`ALEX_BOT_KEY` / `MASON_KEY`), explicitly "never argv — argv leaks in `ps`",
+> and never writes them to disk. Match that. §5's
+> `/tmp/alex-phantom-keypair.json` is a single-signer `solana` CLI convenience
+> (`initialize-mainnet.js` reads `SOLANA_ADMIN_KEYPAIR`, a path), not the pattern
+> for this shape of transaction. If a temp keypair file is unavoidable anyway,
+> treat it as burned — 1Password to `/tmp`, shredded with the rotation, never
 > reused. If browser coordination is wanted instead, **build it in turf-monster**
 > (the web3 app, per `app-templates.md` in mcritchie-studio). That is **not
 > filed** and this note is not a request to file it: the console served zero
