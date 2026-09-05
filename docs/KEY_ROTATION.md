@@ -389,8 +389,15 @@ heroku run 'bin/rails runner "puts Solana::Vault.new.read_vault_state.inspect"' 
 > Those two variables name Alex Bot and Mason because a Squads UPGRADE is what
 > `squad-upgrade.js` signs. For the rotation THIS runbook is about — evicting a
 > compromised Alex Bot — the signing pair MUST be **Alex
-> (`7ZDJp7FU…59Tcr`) and Mason (`CytJS23p…qWjrR`)**, the two human mainnet vault
-> signers in the `Identities` table above, and the bot MUST NOT sign.
+> (`7ZDJp7FU…59Tcr`) and Mason (`CytJS23p…qWjrR`)**, the two human signers in the
+> `Identities` table above, and the bot MUST NOT sign. **Confirm both against
+> the live `VaultState.signers` with the §5 read-back BEFORE you compose the
+> transaction.** That table names the humans, not the on-chain set: the mainnet
+> vault signer set is not recorded in this repo, as "But it is the same three
+> keys — verify that before you rely on it" says above. If either key is absent
+> from the live set, `validate_multisig` rejects the transaction with
+> `Unauthorized` (**6000**) — loud and harmless, but paid for out of the
+> rotation window.
 > Continuity (`update_signers.rs:100-107`) requires BOTH authorizing cosigners
 > to survive into the new set, so a bot signature forces the bot to stay:
 > dropping it then trips `SignerContinuityRequired` (**6017**,
