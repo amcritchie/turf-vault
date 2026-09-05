@@ -33,7 +33,7 @@ Live deployment identity lives in [`docs/CURRENT_DEPLOYMENT.md`](docs/CURRENT_DE
 - Fix: Check binary size: `ls -la target/deploy/turf_vault.so`. Reduce program size: remove unused instructions, consolidate error messages, use `msg!()` sparingly. Enable size optimization in `Cargo.toml`: `[profile.release] opt-level = "z"`.
 
 **`anchor deploy` fails / program authority is the Squads multisig**
-- Diagnosis: `anchor deploy` fails because the program's upgrade authority is not a single keypair. As of 2026-05-19 (OPSEC-002) the upgrade authority is a Squads V4 2-of-3 multisig vault PDA (`BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC`), not `~/.config/solana/id.json`.
+- Diagnosis: `anchor deploy` fails because the program's upgrade authority is not a single keypair. As of 2026-05-19 (OPSEC-002) the upgrade authority is a Squads V4 2-of-3 multisig vault PDA, not `~/.config/solana/id.json`. **The vault PDA differs per cluster** — devnet `BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC`, mainnet `Bk9sS7iiSRL18vuo2KVzkeGw7EekKqxMCjrdoyGGdJm`. Confirm the one you are about to deploy against with `solana program show <PROGRAM_ID> --url <cluster>`.
 - Fix: Do not use `anchor deploy` for an existing deployed program under Squads authority. Upgrades go through `scripts/squad-upgrade.js`: build, `solana program write-buffer`, `solana program set-buffer-authority` to the vault PDA, then `node scripts/squad-upgrade.js <BUFFER_ADDR>` (propose → approve ×2 → execute). Verify the current authority with the program ID in `docs/CURRENT_DEPLOYMENT.md`.
 
 ## Test Failures
