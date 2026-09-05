@@ -269,6 +269,151 @@ heroku run 'bin/rails runner "puts Solana::Vault.new.read_vault_state.inspect"' 
 > and Mason present), not just one — a `[survivor, junk, junk]` set would brick
 > all governance even though it superficially "kept a known-good key."
 
+> **WHO BUILDS AND COLLECTS THE TWO SIGNATURES — recorded 2026-09-04, because
+> nothing here said.** The rule above says a rotation *is* a 2-of-3 tx; it never
+> said what composes it or gathers the signatures.
+>
+> **There was one built tool, and it is gone.** McRitchie Studio's admin signing
+> console composed the instruction server-side and let each signer approve in
+> their own Phantom, anchored on a durable nonce so a half-signed transaction did
+> not expire between signers. It was **deleted on 2026-09-04**
+> (`/tasks/retire-signing-console`, merged to `accepted`; it reaches production
+> with the next release): Turf Monster is the hub for all Solana/web3 logic, so
+> the hub keeps none. Nothing in this repo ever referenced it, so nothing here
+> broke — but it was the only tool that did this, and a reader who finds it in an
+> older audit should know it is not the path.
+>
+> **Squads does not cover this.** A Squads V4 vault PDA holds the program's
+> **upgrade** authority — on **mainnet**, which this plan is written for, that is
+> `Bk9sS7iiSRL18vuo2KVzkeGw7EekKqxMCjrdoyGGdJm` (`scripts/squad.json`, the live
+> top-level block). `BW13kgfiG2koFn3WRkte21NW9TFygsD1ge2fNJdjH6kC` is the
+> **devnet** vault PDA (`CURRENT_DEPLOYMENT.md` § Devnet, and squad.json's
+> `_devnet_reference`); the `Identities` section above already lists it as the
+> devnet substitution. The vault's **signer set** is a different authority
+> entirely, changed by a different transaction: `update_signers` against
+> `VaultState`, never a Squads proposal.
+>
+> **But it is the same three keys — verify that before you rely on it.** The
+> Squads membership is `8K81…` (Alex Bot), `7ZDJ…` (Alex), `Cyt…` (Mason)
+> (`scripts/squad.json` `members`). The mainnet **VaultState** signer set is
+> **not recorded in this repo**: `CURRENT_DEPLOYMENT.md`'s only signer rows sit
+> under `## Devnet`, and its `## Mainnet` table has none. Read it on-chain with
+> the §5 read-back above before composing the rotation. Two authorities, two
+> transactions, **one overlapping membership**: a compromised key sits in BOTH,
+> which is why §0 calls Alex Bot "a 1-of-3 vault signer **and** a member of the
+> Squads upgrade-authority multisig," and why **§7 exists**. Rotating the vault
+> signer set does **not** evict that key from Squads. A real compromise needs
+> both moves.
+>
+> **So a rotation today needs a script that does not exist yet.** The only
+> chain-operation scripts in `scripts/` are `initialize-mainnet.js` and
+> `squad-upgrade.js` — the rest of the directory is `squad.json` (the config both
+> read, and the one §4/§5 have you edit) and `check-doc-op-refs.js` (the docs
+> guard CI runs). Neither builds `update_signers`.
+>
+> **WHO MAY SIGN IT.** (Every Rust file cited below lives under
+> `programs/turf_vault/src/` — `state.rs` and `errors.rs` at its root,
+> `update_signers.rs` and `initialize.rs` in its `instructions/`.) The
+> transaction carries TWO `Signer` accounts, `admin` and `cosigner`
+> (`update_signers.rs:48-51`), and the constraint that decides
+> acceptance is `validate_multisig(&admin.key(), &cosigner.key())`
+> (`update_signers.rs:57`), which is
+> `s1 != s2 && is_signer(s1) && is_signer(s2)` (`state.rs:159-160`). So both
+> keys must be **distinct**, and both must ALREADY be members of
+> `VaultState.signers` — the set as it stands BEFORE the write. Neither slot is
+> privileged: `admin` and `cosigner` are symmetric, so either eligible key may
+> occupy either slot. Any other pair returns `Unauthorized` (**6000**,
+> `update_signers.rs:58`), whose message — "Only the vault admin can perform
+> this action" (`errors.rs:20-21`) — misdescribes the check it reports: there is
+> no single admin here, only two current signers.
+>
+> **2-of-3 is structural, not configured.** `validate_multisig` never reads
+> `VaultState.threshold` — and neither does anything else that authorizes. The
+> field's only reads in the whole program are in `initialize.rs`, which
+> validates it 1-3 (`:112`), stores it (`:142`) and logs it (`:177`); no
+> instruction consults it afterwards. The "2" is the function's arity plus its
+> distinctness test, the "3" is `signers: [Pubkey; 3]`, and the same
+> `validate_multisig` gates every other 2-of-3 instruction in the program
+> (`settle_contest`, `cancel_contest`, `pause`, `sweep_operator_revenue` and the
+> rest). So setting `threshold` to anything else would change nothing.
+> `update_signers` also does not write it: its handler's only state write is
+> `vault.signers = new_signers` (`update_signers.rs:109-114`).
+>
+> **The delta is FIVE changes to `initialize-mainnet.js`, not one line.** The
+> signing MECHANISM is one line and it is correct: add `.signers([cosigner])` to
+> the `.rpc()` call. That script builds a single `anchor.Wallet` provider
+> (`:105`) which signs as fee payer and as `admin` (`:126`) and passes no
+> signers array, so the extra keypair supplies `cosigner`. Around that line,
+> five things change:
+>
+> 1. **The method** — `.updateSigners(newSigners)` replaces
+>    `.initialize(signers, threshold, treasuryAuth)` (`:124`).
+> 2. **The accounts** — three (`admin`, `cosigner`, `vaultState`) replace the
+>    nine at `:125-135`. `cosigner` has no counterpart in `initialize`; it is
+>    added, not renamed.
+> 3. **A second signing key** — `loadKeypair` (`:58-61`) is called once, for the
+>    admin (`:95`). See the env-var note below for the shape the second should
+>    take.
+> 4. **Delete the existence guard** — `:119-120` aborts when `VaultState`
+>    already exists, which is exactly the precondition a rotation requires. Left
+>    in, it refuses every rotation it could ever be asked to perform.
+> 5. **The config read is already broken** — `:67` aborts unless `cfg.mainnet`
+>    exists, and `:71-83` read `programId`, `vaultPda`, `members` and
+>    `threshold` off that block. `scripts/squad.json` has NO `mainnet` key — its
+>    top level is `_comment`, `network`, `programId`, `multisigPda`, `vaultPda`,
+>    `threshold`, `members`, `_devnet_reference` — so the script aborts at `:67`
+>    today, before it ever reaches `.rpc()`.
+>
+> Items 4 and 5 are pre-existing script state, not work this rotation creates.
+> They are listed because this note points an operator at that script as a
+> template, which is what puts them in the path. Item 5 reaches wider than the
+> script: the `Identities` table, §3's re-pin list, §4 step 4a and §5's edit
+> step all still say `squad.json`'s "`mainnet` block" as well. Whether the
+> repair belongs in the script (read the top level) or in the config (restore a
+> `mainnet` block) is a separate decision with its own task — **it is NOT fixed
+> here**, and it is recorded so nobody rediscovers it under pressure.
+>
+> Do **not** model the script on §5: §5 is a single-signer `INIT_AUTHORITY` flow
+> with no partial-signature step in it. With two LOCAL keypairs there are no
+> partial signatures to collect and no expiry window to race — the durable nonce
+> the console needed was needed only because its signers were REMOTE, in
+> separate browsers. **Budget the work into the rotation window; do not discover
+> it there.**
+>
+> **Its cost, and how to keep it small.** Both keys leave Phantom, which is
+> precisely the property the console existed to avoid; that is traded knowingly.
+> But do not reach for keypair FILES by default. `squad-upgrade.js` — this repo's
+> other two-signature script — loads both signing keys from base58 env vars
+> (`ALEX_BOT_KEY` / `MASON_KEY`), explicitly "never argv — argv leaks in `ps`",
+> and never writes them to disk. Match that — the HANDLING, not the pair.
+> Those two variables name Alex Bot and Mason because a Squads UPGRADE is what
+> `squad-upgrade.js` signs. For the rotation THIS runbook is about — evicting a
+> compromised Alex Bot — the signing pair MUST be **Alex
+> (`7ZDJp7FU…59Tcr`) and Mason (`CytJS23p…qWjrR`)**, the two human signers in the
+> `Identities` table above, and the bot MUST NOT sign. **Confirm both against
+> the live `VaultState.signers` with the §5 read-back BEFORE you compose the
+> transaction.** That table names the humans, not the on-chain set: the mainnet
+> vault signer set is not recorded in this repo, as "But it is the same three
+> keys — verify that before you rely on it" says above. If either key is absent
+> from the live set, `validate_multisig` rejects the transaction with
+> `Unauthorized` (**6000**) — loud and harmless, but paid for out of the
+> rotation window.
+> Continuity (`update_signers.rs:100-107`) requires BOTH authorizing cosigners
+> to survive into the new set, so a bot signature forces the bot to stay:
+> dropping it then trips `SignerContinuityRequired` (**6017**,
+> `errors.rs:54-55`), and satisfying the guard means keeping the leaked key.
+> Either way the eviction fails. Name the env vars for the keys that actually
+> sign. §5's
+> `/tmp/alex-phantom-keypair.json` is a single-signer `solana` CLI convenience
+> (`initialize-mainnet.js` reads `SOLANA_ADMIN_KEYPAIR`, a path), not the pattern
+> for this shape of transaction. If a temp keypair file is unavoidable anyway,
+> treat it as burned — 1Password to `/tmp`, shredded with the rotation, never
+> reused. If browser coordination is wanted instead, **build it in turf-monster**
+> (the web3 app, per `app-templates.md` in mcritchie-studio). That is **not
+> filed** and this note is not a request to file it: the console served zero
+> production signing requests in its lifetime, so the tool is worth building when
+> a rotation is actually scheduled — not before.
+
 ---
 
 ## §6. Re-pin IDL + re-point turf-monster-mainnet env  *(operator)*
