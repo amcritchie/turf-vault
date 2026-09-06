@@ -6,12 +6,19 @@
 //   2. CLI keypair set to Alex Phantom (INIT_AUTHORITY — Alex is the only
 //      key that can call initialize in a mainnet build per state.rs).
 //   3. Alex Phantom has ≥ 0.05 SOL on mainnet for rent.
-//   4. scripts/squad.json's `mainnet` block has been filled in (programId,
-//      multisigPda, vaultPda) — placeholders refused.
+//   4. scripts/squad.json carries the mainnet Squads config — programId,
+//      multisigPda, vaultPda — in EITHER shape this repo ships:
+//        - FLAT   (what squad.json ships today, and what squad-upgrade.js
+//                  reads): those fields at the TOP LEVEL, alongside
+//                  `"network": "mainnet-beta"`.
+//        - NESTED (older runbook prose): the same fields under a `mainnet`
+//                  key. Nested wins if both are present.
+//      Placeholders refused; so is a flat config that is not mainnet-beta.
+//      Shape resolution + its reasoning: scripts/lib/mainnet-config.js.
 //
 // What this script does:
 //   - Loads anchor's IDL + program ID from disk (target/idl/turf_vault.json +
-//     scripts/squad.json mainnet.programId).
+//     scripts/squad.json's resolved mainnet block — see precondition 4).
 //   - Derives the three PDAs: vault_state ([b"vault"]), payout_op_rev_ata
 //     ([b"op_rev", USDC]), second_op_rev_ata ([b"op_rev", USDT]).
 //   - Builds + sends the initialize TX with:
@@ -40,11 +47,10 @@ const { TOKEN_PROGRAM_ID } = require("@solana/spl-token");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { loadMainnetConfig, MainnetConfigError } = require("./lib/mainnet-config");
 
 const USDC_MAINNET_MINT = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 const USDT_MAINNET_MINT = new PublicKey("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB");
-
-const PLACEHOLDER_PUBKEY = "11111111111111111111111111111111";
 
 function abort(msg) {
   console.error(`\n[initialize-mainnet] ABORT: ${msg}\n`);
@@ -64,23 +70,25 @@ function loadKeypair(filepath) {
   const cfgPath = path.join(__dirname, "squad.json");
   const cfg = readJson(cfgPath);
 
-  if (!cfg.mainnet) abort(`squad.json has no 'mainnet' block — see runbook §3.`);
-  const m = cfg.mainnet;
-
-  // Refuse placeholder values (runbook §3 replaces these).
-  for (const k of ["programId", "multisigPda", "vaultPda"]) {
-    if (!m[k] || m[k] === PLACEHOLDER_PUBKEY) {
-      abort(`squad.json mainnet.${k} is still the placeholder '${PLACEHOLDER_PUBKEY}'. Run runbook §3 first.`);
-    }
+  // Resolve the mainnet block in EITHER shipped shape (nested `mainnet` block,
+  // or the flat top level squad.json actually carries), then validate it:
+  // placeholders refused, all three members required, and a FLAT config that
+  // does not declare `"network": "mainnet-beta"` refused outright. Until
+  // 2026-09-06 this demanded a nested `mainnet` block and so aborted on the
+  // committed squad.json — see scripts/lib/mainnet-config.js for the full note.
+  let m;
+  try {
+    m = loadMainnetConfig(cfg);
+  } catch (e) {
+    if (e instanceof MainnetConfigError) abort(e.message);
+    throw e;
   }
-  for (const role of ["alex_bot", "alex", "mason"]) {
-    if (!m.members?.[role]) abort(`squad.json mainnet.members.${role} is missing.`);
-  }
+  console.log(`[initialize-mainnet] Config: ${cfgPath} (${m.shape} shape, network ${m.network})`);
 
   const programId       = new PublicKey(m.programId);
   const treasuryAuth    = new PublicKey(m.vaultPda);  // Squads vault PDA from runbook §2
   const signers         = [m.members.alex_bot, m.members.alex, m.members.mason].map((k) => new PublicKey(k));
-  const threshold       = m.threshold ?? 2;
+  const threshold       = m.threshold;
 
   // RPC: prefer SOLANA_RPC_URL (operator can use Helius). Fall back to public mainnet.
   const rpcUrl = process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";

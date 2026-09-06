@@ -80,7 +80,10 @@ trusting it.)
    (under "Vaults" → main vault). These are the two addresses we need.
 4. Fund the **vault PDA** with ≥ 0.05 SOL so it can pay fees on its own
    proposal executions.
-5. Record both PDAs into `scripts/squad.json` (the `mainnet` block).
+5. Record both PDAs into `scripts/squad.json` — at its **top level**
+   (`multisigPda`, `vaultPda`). That file has no `mainnet` block; its top level
+   IS the mainnet config, and is what `squad-upgrade.js` and
+   `initialize-mainnet.js` both read.
    Commit + push that update before §3.
 
 ---
@@ -113,7 +116,7 @@ with the printed pubkey:
 
 1. `programs/turf_vault/src/lib.rs` — the `#[cfg(feature = "mainnet")] declare_id!(…)` line.
 2. `Anchor.toml` — `[programs.mainnet]` entry.
-3. `scripts/squad.json` — `mainnet.programId` field.
+3. `scripts/squad.json` — the **top-level** `programId` field.
 
 Verify all three match:
 
@@ -220,12 +223,14 @@ solana balance     # must have ≥ 0.05 SOL to pay rent for VaultState + 2 op_re
 #   - signers → [alex_bot, alex, mason], threshold 2
 
 cd ~/projects/turf-vault
-node scripts/initialize-mainnet.js   # ← To-be-written; uses scripts/squad.json mainnet block
+node scripts/initialize-mainnet.js   # reads scripts/squad.json's top-level config
 ```
 
-If `initialize-mainnet.js` doesn't exist yet, the equivalent is one Anchor
-TX builder + `solana program submit`. The shape mirrors the devnet
-`scripts/initialize.js` (look at it for reference).
+`scripts/initialize-mainnet.js` is the supported path; it is written, and this
+step no longer has a hand-rolled alternative. Its first line of output names
+the config shape and cluster it resolved. It refuses placeholder addresses, and
+refuses a config that does not declare `mainnet-beta` — so a devnet config
+cannot reach the mainnet mints this script hardcodes.
 
 Verify:
 
