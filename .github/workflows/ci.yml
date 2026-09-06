@@ -143,3 +143,20 @@ jobs:
       # inside single quotes).
       - name: check doc op:// references
         run: npm run check:doc-op-refs
+
+      # THE SCRIPTS REGRESSION SUITE — also pure Node stdlib (`node:test`), which
+      # is why it belongs in THIS lane and not one that installs a dependency
+      # tree. The runtime-dependent end-to-end case in it self-skips when
+      # node_modules is absent, as it is here; the shape assertions it exists for
+      # need nothing but the runtime and the committed scripts/squad.json.
+      #
+      # WHY IT WAS ADDED (2026-09-06, measured). This workflow's two lanes are
+      # structurally blind to a whole class of defect: `program` compiles Rust and
+      # `guards` reads prose for op:// references, so NEITHER can observe a
+      # JavaScript config-shape bug. scripts/initialize-mainnet.js demanded a
+      # nested `mainnet` block that scripts/squad.json does not have and aborted
+      # on the very file this repo ships — with CI green over it the whole time.
+      # A green verdict from a lane that cannot fail is worth nothing, and the
+      # deploy scripts are exactly the code an operator runs on the worst day.
+      - name: scripts regression suite
+        run: npm run test:scripts

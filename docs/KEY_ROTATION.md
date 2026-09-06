@@ -81,7 +81,9 @@ Immediate containment (operator, before the redeploy):
 > constant in `state.rs` and is unaffected by the leak. The §5 re-init runs
 > from Phantom, so the leaked key never touches the new program.
 
-Mainnet program / Squads (from `scripts/squad.json` `mainnet` block):
+Mainnet program / Squads (from `scripts/squad.json`'s **top level** — that
+file has no `mainnet` block; its top level IS the live mainnet-beta config,
+and it is what both `squad-upgrade.js` and `initialize-mainnet.js` read):
 
 | | value |
 |--|--|
@@ -171,7 +173,7 @@ Replace the 3 program-ID references with the NEW program ID (same edit points
 as MAINNET_LAUNCH §3):
 1. `programs/turf_vault/src/lib.rs` — `#[cfg(feature = "mainnet")] declare_id!(…)`
 2. `Anchor.toml` — `[programs.mainnet]`
-3. `scripts/squad.json` — `mainnet.programId`
+3. `scripts/squad.json` — the **top-level** `programId`
 
 ```bash
 # 3b. Rebuild mainnet binary with the new declare_id! baked in.
@@ -213,7 +215,8 @@ new program at a tainted authority.
 ```bash
 # 4a. (Recommended) Create the new Squads 2-of-3 via https://app.squads.so
 #     (mainnet). Members: NEW alex_bot, alex 7ZDJ, mason Cyt. Threshold 2.
-#     Record the new multisigPda + vaultPda into scripts/squad.json mainnet block.
+#     Record the new multisigPda + vaultPda at scripts/squad.json's TOP LEVEL
+#     (that file has no `mainnet` block — see the Identities note above).
 
 # 4b. Point the new program's upgrade authority at the new Squads vault PDA.
 solana program set-upgrade-authority <NEW_PROGRAM_ID> \
@@ -240,10 +243,15 @@ solana config set --url mainnet-beta --keypair /tmp/alex-phantom-keypair.json
 solana balance   # ≥ ~0.05 SOL for VaultState + 2 op_rev ATAs rent
 
 cd ~/projects/turf-vault
-# Edit scripts/initialize-mainnet.js (or squad.json mainnet block) so signers =
-#   [ NEW alex_bot, 7ZDJ alex, Cyt mason ], threshold 2,
-#   treasury_authority = NEW_SQUADS_VAULT_PDA.
+# Edit scripts/squad.json's TOP-LEVEL fields — `members` = [ NEW alex_bot,
+#   7ZDJ alex, Cyt mason ], `threshold` 2, `vaultPda` = NEW_SQUADS_VAULT_PDA
+#   (it is passed as treasury_authority), `programId` = NEW_PROGRAM_ID.
+#   The script reads that top level directly; no `mainnet` block is needed.
 node scripts/initialize-mainnet.js
+#   First line of output names the shape and cluster it resolved, e.g.
+#   "Config: .../scripts/squad.json (flat shape, network mainnet-beta)".
+#   It REFUSES a flat config whose `network` is not "mainnet-beta", and one
+#   that declares no network at all, rather than initializing the wrong cluster.
 ```
 
 Verify the new VaultState carries the **new** signer set and **NOT** the leaked
@@ -342,36 +350,39 @@ heroku run 'bin/rails runner "puts Solana::Vault.new.read_vault_state.inspect"' 
 > **The delta is FIVE changes to `initialize-mainnet.js`, not one line.** The
 > signing MECHANISM is one line and it is correct: add `.signers([cosigner])` to
 > the `.rpc()` call. That script builds a single `anchor.Wallet` provider
-> (`:105`) which signs as fee payer and as `admin` (`:126`) and passes no
+> (`:113`) which signs as fee payer and as `admin` (`:134`) and passes no
 > signers array, so the extra keypair supplies `cosigner`. Around that line,
 > five things change:
 >
 > 1. **The method** — `.updateSigners(newSigners)` replaces
->    `.initialize(signers, threshold, treasuryAuth)` (`:124`).
+>    `.initialize(signers, threshold, treasuryAuth)` (`:132`).
 > 2. **The accounts** — three (`admin`, `cosigner`, `vaultState`) replace the
->    nine at `:125-135`. `cosigner` has no counterpart in `initialize`; it is
+>    nine at `:133-143`. `cosigner` has no counterpart in `initialize`; it is
 >    added, not renamed.
-> 3. **A second signing key** — `loadKeypair` (`:58-61`) is called once, for the
->    admin (`:95`). See the env-var note below for the shape the second should
+> 3. **A second signing key** — `loadKeypair` (`:64-67`) is called once, for the
+>    admin (`:103`). See the env-var note below for the shape the second should
 >    take.
-> 4. **Delete the existence guard** — `:119-120` aborts when `VaultState`
+> 4. **Delete the existence guard** — `:127-128` aborts when `VaultState`
 >    already exists, which is exactly the precondition a rotation requires. Left
 >    in, it refuses every rotation it could ever be asked to perform.
-> 5. **The config read is already broken** — `:67` aborts unless `cfg.mainnet`
->    exists, and `:71-83` read `programId`, `vaultPda`, `members` and
->    `threshold` off that block. `scripts/squad.json` has NO `mainnet` key — its
->    top level is `_comment`, `network`, `programId`, `multisigPda`, `vaultPda`,
->    `threshold`, `members`, `_devnet_reference` — so the script aborts at `:67`
->    today, before it ever reaches `.rpc()`.
+> 5. ~~**The config read is already broken**~~ — **FIXED 2026-09-06**
+>    (`/tasks/mainnet-init-aborts-flat`). The guard used to abort unless
+>    `cfg.mainnet` existed, and `scripts/squad.json` has no `mainnet` key — so
+>    the script died on the very config the repo ships, before it ever reached
+>    `.rpc()`. It now resolves EITHER shape through
+>    `scripts/lib/mainnet-config.js`: the FLAT top level squad.json actually
+>    carries (and `squad-upgrade.js` reads), or a nested `mainnet` block if one
+>    is present, which wins when both are. The config was left flat
+>    deliberately — a second nested copy of `programId`/`multisigPda`/`vaultPda`
+>    would put two sources of truth for the same four addresses in one file,
+>    read by two different scripts, and drift there means upgrading one program
+>    while initializing another. The `Identities` table, §3's re-pin list, §4
+>    step 4a and §5's edit step were corrected to name the top level in the same
+>    change.
 >
-> Items 4 and 5 are pre-existing script state, not work this rotation creates.
-> They are listed because this note points an operator at that script as a
-> template, which is what puts them in the path. Item 5 reaches wider than the
-> script: the `Identities` table, §3's re-pin list, §4 step 4a and §5's edit
-> step all still say `squad.json`'s "`mainnet` block" as well. Whether the
-> repair belongs in the script (read the top level) or in the config (restore a
-> `mainnet` block) is a separate decision with its own task — **it is NOT fixed
-> here**, and it is recorded so nobody rediscovers it under pressure.
+> Item 4 is pre-existing script state, not work this rotation creates. It is
+> listed because this note points an operator at that script as a template,
+> which is what puts it in the path.
 >
 > Do **not** model the script on §5: §5 is a single-signer `INIT_AUTHORITY` flow
 > with no partial-signature step in it. With two LOCAL keypairs there are no
