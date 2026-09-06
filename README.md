@@ -12,9 +12,9 @@ Solana escrow program for contest entry fees and prize distribution. Built with 
 
 ## Overview
 
-TurfVault is the on-chain backend for [Turf Monster](https://app.turfmonster.media), a sports pick'em app. It implements a "DeFi mullet" — a traditional Rails web app on top, Solana smart contract underneath.
+TurfVault is the on-chain backend for [Turf Monster](https://turfmonster.media), a sports pick'em app. It implements a "DeFi mullet" — a traditional Rails web app on top, Solana smart contract underneath.
 
-> **Part of the McRitchie ecosystem** — see [`ECOSYSTEM.md`](https://github.com/amcritchie/mcritchie-studio/blob/main/docs/ECOSYSTEM.md) for the 5-repo map; [`house-burn-down.md`](https://github.com/amcritchie/mcritchie-studio/blob/main/docs/agents/system/house-burn-down.md) for fresh-Mac recovery.
+> **Part of the McRitchie ecosystem** — see [`ECOSYSTEM.md`](https://github.com/amcritchie/mcritchie-studio/blob/main/docs/ECOSYSTEM.md) for the repo map; [`house-burn-down.md`](https://github.com/amcritchie/mcritchie-studio/blob/main/docs/agents/system/house-burn-down.md) for fresh-Mac recovery.
 
 TurfVault uses a server-facilitated self-custody model. User funds live in each user's own SPL token account (ATA), not in a pooled vault balance. Paid entries transfer the entry fee from the user ATA into a per-currency operator-revenue ATA; contest prizes are pre-funded into a per-contest prize-pool ATA and paid directly to winners on settlement. Rails handles UX and game logic, but the money-moving state transitions happen on-chain.
 
@@ -274,7 +274,7 @@ Each deploy is tagged (e.g. `v0.1.0`) and documented in the changelog. See `Carg
 
 ## Related
 
-- [Turf Monster](https://app.turfmonster.media) — Rails pick'em app that integrates with this vault
+- [Turf Monster](https://turfmonster.media) — Rails pick'em app that integrates with this vault
 - [Anchor Framework](https://www.anchor-lang.com/) — Solana development framework
 
 ## License

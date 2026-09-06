@@ -316,9 +316,9 @@ If anything is wrong, the recovery flow is:
 
 ## §10. Cutover
 
-This is the moment you flip `app.turfmonster.media` to point at the
-mainnet app instead of the devnet one. Up to this point the
-mainnet app has no traffic and the devnet app is unchanged.
+This is the moment you flip `turfmonster.media` to point at the mainnet app
+instead of the devnet one. Keep `app.turfmonster.media` attached only as a
+legacy alias while old links and provider dashboards are migrated.
 
 1. Update DNS / Heroku custom domain attachment.
 2. Announce externally.
