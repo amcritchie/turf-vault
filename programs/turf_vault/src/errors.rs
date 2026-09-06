@@ -115,4 +115,8 @@ pub enum VaultError {
     InvalidSeedGrantInvitee,                     // 6043
     #[msg("Seed grant amount must be greater than 0 and at most MAX_GRANT_SEEDS")]
     SeedGrantAmountInvalid,                      // 6044
+
+    // ── 6045+: new for burn_entry_token (operator claw-back) ──────────────
+    #[msg("Entry token has already been burned")]
+    EntryTokenAlreadyBurned,                     // 6045
 }

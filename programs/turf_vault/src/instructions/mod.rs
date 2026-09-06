@@ -13,7 +13,7 @@
 //                              set_contest_conclusion_time, settle_contest,
 //                              cancel_contest, close_contest
 //   Entries                  — enter_contest, enter_contest_with_token
-//   Free entries             — mint_entry_token
+//   Free entries             — mint_entry_token, burn_entry_token
 //   Treasury                 — sweep_operator_revenue
 
 pub mod initialize;
@@ -33,6 +33,7 @@ pub mod settle_contest;
 pub mod cancel_contest;
 pub mod close_contest;
 pub mod mint_entry_token;
+pub mod burn_entry_token;
 pub mod grant_seeds;
 pub mod sweep_operator_revenue;
 pub mod pause;
@@ -56,6 +57,7 @@ pub use settle_contest::*;
 pub use cancel_contest::*;
 pub use close_contest::*;
 pub use mint_entry_token::*;
+pub use burn_entry_token::*;
 pub use grant_seeds::*;
 pub use sweep_operator_revenue::*;
 pub use pause::*;

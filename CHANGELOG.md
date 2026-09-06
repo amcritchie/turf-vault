@@ -4,6 +4,50 @@ All notable changes to TurfVault are documented here. Format based on [Keep a Ch
 
 ## [Unreleased]
 
+### Added
+
+- **`burn_entry_token` — operator claw-back of an unspent free entry.** The
+  counterpart to `mint_entry_token`, for a voucher granted in error, granted to
+  a fraudulent account, or granted against a payment later refunded. 1-of-3
+  vault signer; the holder does NOT sign, which is deliberately the opposite of
+  OPSEC-004's ruling on `enter_contest_with_token`. The asymmetry is sound:
+  there, an admin-only consume could SPEND a user's token on a contest of the
+  admin's choosing, converting their property into an entry they never picked;
+  here the token is destroyed and no entry is created, so a rogue signer can
+  vandalize but cannot misappropriate — and could simply have declined to mint.
+  Not gated by pause (mirrors `mint_entry_token`): a pause is when an operator
+  most needs to stop bad vouchers being redeemed.
+
+  **TOMBSTONE, not `close = admin`.** Rails derives what a user is owed from the
+  on-chain token COUNT (`(seeds / SEEDS_PER_LEVEL) - tokens.length`, in both
+  `Admin::FreeEntriesController` and `Tokens::LevelUpGrant#missing_levels`).
+  Closing the PDA would drop that count, so a burned token would re-read as owed
+  and be re-minted by the admin page's own "Mint all" or the next level-up
+  sweep — the burn would undo itself. The account survives and its rent is not
+  refunded; that is the cost of a burn that sticks.
+
+  **NO ACCOUNT-LAYOUT / BYTE-SIZE CHANGE.** `EntryTokenAccount::LEN` stays 124.
+  A real `burned` field would add 10 bytes, and the moment the struct grows,
+  `Account<'info, EntryTokenAccount>` stops deserializing every account already
+  on chain — breaking `enter_contest_with_token` for every token minted before
+  the upgrade. (`realloc` does not help: Anchor deserializes before the realloc
+  constraint runs.) So the tombstone rides in the spare HIGH BIT of the existing
+  `source` byte — new `entry_token_source::BURNED_FLAG` (`0x80`) and
+  `SOURCE_MASK` (`0x7f`) — which is free because provenance values occupy 0..=2
+  here (0..=5 in Rails) and `mint_entry_token` assigns `source` raw with no range
+  check. A burn sets `consumed = true` (the actual spend block, reusing the
+  constraint `enter_contest_with_token` already carried) plus `consumed_at` and
+  the flag (which distinguishes a claw-back from a genuine redemption).
+
+  Guarded by `!consumed` (never rewrite the history of an entry that stands) and
+  by the flag (a re-burn would overwrite `consumed_at` and destroy the record of
+  when the burn happened). `source_ref_hash` seed-binds the target and the
+  handler asserts it equals `sha256(entry_token.source_ref)`, so a burn must name
+  its token twice — a wrong account fails the seeds check rather than quietly
+  destroying someone else's voucher.
+
+  New error `EntryTokenAlreadyBurned` (6045).
+
 ### Changed
 
 - Realigned the TypeScript verification suite around
@@ -13,8 +57,19 @@ All notable changes to TurfVault are documented here. Format based on [Keep a Ch
 
 ### Tests
 
-- Latest local proof, 2026-06-14: `23 passing` against an isolated local
-  validator on `127.0.0.1:8898`.
+- Latest local proof, 2026-09-06: `27 passing` against an isolated local
+  validator on `127.0.0.1:8898` (was 23; +4 for `burn_entry_token` — the
+  tombstone the account survives, a burned voucher refused at entry, the
+  double-burn and burn-a-spent-token refusals, and the signer + seed-binding
+  auth cases).
+
+  That run earned its keep. The double-burn case failed first, and not for the
+  reason a reader would guess: Anchor returns the FIRST failing constraint, a
+  burn sets `consumed`, and `!consumed` was written above the burned-flag check
+  — so a second burn answered `EntryTokenAlreadyConsumed` ("already spent on an
+  entry") and `EntryTokenAlreadyBurned` was unreachable. Correct refusal,
+  misleading message, on the one action an operator cannot undo. The constraints
+  are now ordered flag-first.
 
 ## [0.25.0] - 2026-06-10
 

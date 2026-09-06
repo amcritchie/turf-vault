@@ -365,6 +365,24 @@ describe("turf_vault verification matrix", () => {
     return { pda, ref, hash };
   };
 
+  // `signer` omitted => the provider wallet (a vault signer) signs implicitly.
+  // Pass a Keypair to burn AS someone else, which is how the auth case proves a
+  // stranger is refused.
+  const burnEntryToken = async (
+    token: { pda: PublicKey; hash: number[] },
+    signer?: Keypair
+  ): Promise<void> => {
+    await program.methods
+      .burnEntryToken(token.hash as any)
+      .accountsStrict({
+        admin: signer ? signer.publicKey : admin.publicKey,
+        vaultState: vaultStatePda,
+        entryToken: token.pda,
+      })
+      .signers(signer ? [signer] : [])
+      .rpc();
+  };
+
   const enterWithToken = async (
     contest: ContestFixture,
     user: Keypair,
@@ -1336,6 +1354,128 @@ describe("turf_vault verification matrix", () => {
         ),
         /EntryTokenWrongOwner/i
       );
+    });
+
+    // ── burn_entry_token: the operator claw-back ─────────────────────────
+    //
+    // The property under test is that a burn STICKS. Rails derives what a user
+    // is owed from the on-chain token COUNT, so a burn that removed the account
+    // would re-read as owed and be re-minted by the next sweep. Everything here
+    // is ultimately checking that the account survives while its spending power
+    // does not.
+    it("burns an unspent voucher as a tombstone the account survives", async () => {
+      const token = await mintEntryToken(user1.publicKey, "burn-me-plain");
+      const before = await program.account.entryTokenAccount.fetch(token.pda);
+      expect(before.consumed).to.equal(false);
+      expect(before.source).to.equal(0);
+
+      await burnEntryToken(token);
+
+      // NOT closed. This is the whole design: `getAccountInfo` must still find
+      // it, or Rails' owed math re-opens the debt this burn just settled.
+      const info = await provider.connection.getAccountInfo(token.pda);
+      expect(info, "a burned token must NOT be closed — the count is load-bearing")
+        .to.not.equal(null);
+
+      const after = await program.account.entryTokenAccount.fetch(token.pda);
+      expect(after.consumed, "consumed is what blocks the spend").to.equal(true);
+      expect(after.consumedAt).to.not.equal(null);
+      // source = OPERATOR(0) | BURNED_FLAG(0x80). The provenance half survives
+      // in the low 7 bits so the audit trail still says where the token came
+      // from.
+      expect(after.source, "the burn flag rides in source's high bit").to.equal(128);
+      expect(after.source & 0x7f, "provenance must survive the burn").to.equal(0);
+      expect(after.owner.toBase58()).to.equal(user1.publicKey.toBase58());
+    });
+
+    it("a burned voucher can no longer fund an entry", async () => {
+      const burnContest = await createContest("burned-token-contest", {
+        fees: { 0: amount(3) },
+        prizePool: amount(3),
+        payouts: [amount(3)],
+      });
+      const token = await mintEntryToken(user1.publicKey, "burn-then-try-entry");
+      await burnEntryToken(token);
+
+      // The point of the feature. `consumed` is the guard
+      // enter_contest_with_token already carried, which is exactly why the burn
+      // sets it rather than introducing a new field the old accounts lack.
+      await expectRejected(
+        enterWithToken(
+          burnContest,
+          user1,
+          deriveUser(user1.publicKey),
+          token.pda,
+          0
+        ),
+        /EntryTokenAlreadyConsumed/i
+      );
+    });
+
+    it("refuses a double burn and refuses to burn a SPENT voucher", async () => {
+      const doubleContest = await createContest("double-burn-contest", {
+        fees: { 0: amount(2) },
+        prizePool: amount(2),
+        payouts: [amount(2)],
+      });
+
+      // Double burn. Rejected by its OWN guard, not by the consumed guard —
+      // a burn sets consumed itself, so without the flag check a re-burn would
+      // be accepted and would overwrite consumedAt, destroying the record of
+      // when the burn actually happened.
+      const twice = await mintEntryToken(user1.publicKey, "burn-me-twice");
+      await burnEntryToken(twice);
+      const stampedAt = (
+        await program.account.entryTokenAccount.fetch(twice.pda)
+      ).consumedAt;
+      await expectRejected(burnEntryToken(twice), /EntryTokenAlreadyBurned/i);
+      expect(
+        (await program.account.entryTokenAccount.fetch(twice.pda)).consumedAt!.toString(),
+        "a refused re-burn must not move the original burn timestamp"
+      ).to.equal(stampedAt!.toString());
+
+      // Spent, then burned. Burning a token that already funded a real entry
+      // would rewrite the history of an entry that exists and stands.
+      const spent = await mintEntryToken(user1.publicKey, "spend-then-burn");
+      await enterWithToken(
+        doubleContest,
+        user1,
+        deriveUser(user1.publicKey),
+        spent.pda,
+        0
+      );
+      await expectRejected(burnEntryToken(spent), /EntryTokenAlreadyConsumed/i);
+    });
+
+    it("only a vault signer may burn, and the hash must name the token", async () => {
+      const token = await mintEntryToken(user1.publicKey, "burn-auth-checks");
+
+      // A stranger holding no vault seat cannot destroy a user's property.
+      await expectRejected(burnEntryToken(token, stranger), /Unauthorized/i);
+
+      // The fat-finger guard. The account and the ref hash must agree, so a
+      // burn aimed at the wrong account fails the seeds check instead of
+      // quietly destroying some other user's token.
+      const other = await mintEntryToken(user1.publicKey, "burn-wrong-hash-target");
+      await expectRejected(
+        program.methods
+          .burnEntryToken(other.hash as any)
+          .accountsStrict({
+            admin: admin.publicKey,
+            vaultState: vaultStatePda,
+            entryToken: token.pda,
+          })
+          .rpc(),
+        /ConstraintSeeds|EntryTokenSeedMismatch|seeds constraint/i
+      );
+
+      // ...and the token the mismatched call named is untouched.
+      expect(
+        (await program.account.entryTokenAccount.fetch(token.pda)).consumed
+      ).to.equal(false);
+      expect(
+        (await program.account.entryTokenAccount.fetch(other.pda)).consumed
+      ).to.equal(false);
     });
 
     it("pause blocks paid and token entries only; unpause restores both", async () => {
