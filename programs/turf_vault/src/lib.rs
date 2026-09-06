@@ -275,6 +275,25 @@ pub mod turf_vault {
         handle_mint_entry_token(ctx, source, source_ref, source_ref_hash)
     }
 
+    /// Void an unspent EntryTokenAccount — the operator claw-back counterpart to
+    /// mint_entry_token. 1-of-3 vault signer; the owner does NOT sign.
+    ///
+    /// TOMBSTONE, not close: Rails reads what a user is owed off the on-chain
+    /// token COUNT, so closing the PDA would make the burn re-read as owed and
+    /// re-mint itself. The account survives with `consumed = true` (blocks the
+    /// spend, reusing enter_contest_with_token's existing constraint) and
+    /// `source |= BURNED_FLAG` (tells a burn apart from a real redemption). No
+    /// new field, so accounts minted before this upgrade still deserialize.
+    ///
+    /// `source_ref_hash` seed-binds the target: a burn must name its token twice,
+    /// so a wrong account fails the seeds check instead of burning someone else's.
+    pub fn burn_entry_token(
+        ctx: Context<BurnEntryToken>,
+        source_ref_hash: [u8; 32],
+    ) -> Result<()> {
+        handle_burn_entry_token(ctx, source_ref_hash)
+    }
+
     // ── Seed grants ───────────────────────────────────────────────────────
 
     /// Credit a fixed `amount` of loyalty seeds into a user's UserAccount,
