@@ -294,6 +294,29 @@ pub mod entry_token_source {
     pub const OPERATOR: u8 = 0;
     pub const STRIPE: u8 = 1;
     pub const MOONPAY: u8 = 2;
+
+    /// High bit of `EntryTokenAccount.source`, set by `burn_entry_token` to
+    /// tombstone a voucher an operator has clawed back.
+    ///
+    /// It lives in the SPARE BIT of an existing field rather than in a field of
+    /// its own because `EntryTokenAccount::LEN` (124) is fully packed: growing
+    /// the struct would break `Account<EntryTokenAccount>` deserialization for
+    /// every token already minted on chain, and with it
+    /// `enter_contest_with_token` for those holders. The provenance values above
+    /// occupy 0..=2 here and 0..=5 in Rails (ENTRY_TOKEN_SOURCE also carries
+    /// paypal/coinflow/aeropay), and `mint_entry_token` assigns `source` raw with
+    /// no range check — so bit 7 is free and staying free.
+    ///
+    /// A burn sets this AND `consumed`. `consumed` is what blocks the spend;
+    /// this flag is what tells a burn apart from a genuine redemption, which
+    /// matters both for the audit trail and for any UI that would otherwise
+    /// label a clawed-back token "used".
+    pub const BURNED_FLAG: u8 = 0b1000_0000;
+
+    /// Mask for the provenance half of `source`. Any reader that wants
+    /// OPERATOR/STRIPE/... must apply this, because a burned token carries
+    /// `BURNED_FLAG` in the same byte.
+    pub const SOURCE_MASK: u8 = 0b0111_1111;
 }
 
 /// EntryTokenAccount: a pre-purchased contest entry token issued by the admin.
