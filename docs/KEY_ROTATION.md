@@ -350,19 +350,19 @@ heroku run 'bin/rails runner "puts Solana::Vault.new.read_vault_state.inspect"' 
 > **The delta is FIVE changes to `initialize-mainnet.js`, not one line.** The
 > signing MECHANISM is one line and it is correct: add `.signers([cosigner])` to
 > the `.rpc()` call. That script builds a single `anchor.Wallet` provider
-> (`:105`) which signs as fee payer and as `admin` (`:126`) and passes no
+> (`:113`) which signs as fee payer and as `admin` (`:134`) and passes no
 > signers array, so the extra keypair supplies `cosigner`. Around that line,
 > five things change:
 >
 > 1. **The method** — `.updateSigners(newSigners)` replaces
->    `.initialize(signers, threshold, treasuryAuth)` (`:124`).
+>    `.initialize(signers, threshold, treasuryAuth)` (`:132`).
 > 2. **The accounts** — three (`admin`, `cosigner`, `vaultState`) replace the
->    nine at `:125-135`. `cosigner` has no counterpart in `initialize`; it is
+>    nine at `:133-143`. `cosigner` has no counterpart in `initialize`; it is
 >    added, not renamed.
-> 3. **A second signing key** — `loadKeypair` (`:58-61`) is called once, for the
->    admin (`:95`). See the env-var note below for the shape the second should
+> 3. **A second signing key** — `loadKeypair` (`:64-67`) is called once, for the
+>    admin (`:103`). See the env-var note below for the shape the second should
 >    take.
-> 4. **Delete the existence guard** — `:119-120` aborts when `VaultState`
+> 4. **Delete the existence guard** — `:127-128` aborts when `VaultState`
 >    already exists, which is exactly the precondition a rotation requires. Left
 >    in, it refuses every rotation it could ever be asked to perform.
 > 5. ~~**The config read is already broken**~~ — **FIXED 2026-09-06**
